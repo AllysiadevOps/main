@@ -96,8 +96,7 @@ class TestEnvelope(unittest.TestCase):
 
     def test_unpack_envelope_invalid_magic(self):
         # Test handling of malformed magic bytes
-        with self.assertRaises(ValueError):
-            unpack_envelope("INVALID_MAGIC" + b"data")
+        self.assertIsNone(unpack_envelope(b"INVALID_MAGIC" + b"data"))
 
     def test_validate_v1_rejects_invalid_version(self):
         invalid = self.valid_v1.copy()

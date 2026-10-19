@@ -12,11 +12,7 @@ async function sha256(input: ArrayBuffer | string) {
   return hex(await crypto.subtle.digest('SHA-256', bytes))
 }
 
-export async function fieldSecret(label: string, seed: string) {
-  const digest = await sha256(`harpocrates:${label}:${seed}`)
-  const value = BigInt(`0x${digest}`) % BN254_FIELD_MODULUS
-  return value === 0n ? '1' : value.toString(10)
-}
+export { fieldSecret } from './utils'
 
 /**
  * Derive a BN254 field element from a scope string.

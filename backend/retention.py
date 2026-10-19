@@ -60,6 +60,22 @@ class RetentionWorker:
             if num_deleted < self.batch_size:
                 break
 
+        try:
+            from storage import sweep_job_files
+            purged_files = sweep_job_files()
+            if purged_files > 0:
+                log_structured(
+                    LOGGER,
+                    logging.INFO,
+                    {"event": "retention_job_files_purged", "count": purged_files},
+                )
+        except Exception as error:
+            log_structured(
+                LOGGER,
+                logging.ERROR,
+                {"event": "retention_job_files_error", "error_type": type(error).__name__},
+            )
+
 _worker: RetentionWorker | None = None
 
 def init_retention_worker() -> None:

@@ -54,6 +54,9 @@ EXPECTED_CIRCUIT_VERSION: Final[int] = 2
 MIN_PROOF_BYTES: Final[int] = 64
 MAX_PROOF_BYTES: Final[int] = 65_536
 
+MIN_AGGREGATION_SIZE: Final[int] = 1
+MAX_AGGREGATION_SIZE: Final[int] = 8
+
 #: Hard ceiling on accepted hex input length. Anything longer is rejected on the
 #: string itself, before any decoding, so a hostile caller cannot force a large
 #: allocation just to be told the value is too big.

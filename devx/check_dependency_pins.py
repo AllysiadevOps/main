@@ -100,6 +100,17 @@ except ModuleNotFoundError:  # pragma: no cover - the release gate pins 3.12
     )
     raise SystemExit(1)
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from devx._io import (
+    contains_sensitive_text as _io_contains_sensitive_text,
+    read_json_bounded as _io_read_json_bounded,
+    read_text_bounded as _io_read_text_bounded,
+    read_toml_bounded as _io_read_toml_bounded,
+)
+
 
 # ── repository layout ─────────────────────────────────────────────────────────
 
@@ -241,39 +252,88 @@ def read_text(path: Path, report: Report) -> str | None:
     if not path.is_file():
         report.unreadable.append(f"{path}: file is missing")
         return None
-    if not _check_size(path, report):
-        return None
     try:
-        return path.read_text(encoding="utf-8")
+        return _io_read_text_bounded(
+            path,
+            limit=MAX_FILE_BYTES,
+            display_name=str(path),
+        )
     except OSError as exc:
         report.unreadable.append(f"{path}: cannot read: {exc}")
         return None
-    except UnicodeDecodeError as exc:
-        report.parse_errors.append(f"{path}: not valid UTF-8: {exc}")
+    except ValueError as exc:
+        msg = str(exc)
+        if "exceeds the" in msg:
+            size = path.stat().st_size
+            report.unreadable.append(
+                f"{path}: {size} bytes exceeds the {MAX_FILE_BYTES} byte limit"
+            )
+        elif "not valid UTF-8" in msg:
+            report.parse_errors.append(f"{path}: not valid UTF-8: {exc.__cause__ or exc}")
+        else:
+            report.unreadable.append(f"{path}: cannot read: {exc}")
         return None
 
 
 def load_json(path: Path, report: Report) -> Any | None:
     """Parse a JSON file, recording parse failures."""
-    text = read_text(path, report)
-    if text is None:
+    if not path.is_file():
+        report.unreadable.append(f"{path}: file is missing")
         return None
     try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        report.parse_errors.append(f"{path}: invalid JSON: {exc}")
+        return _io_read_json_bounded(
+            path,
+            limit=MAX_FILE_BYTES,
+            display_name=str(path),
+            sensitive_pattern=None,
+            require_dict=False,
+        )
+    except OSError as exc:
+        report.unreadable.append(f"{path}: cannot read: {exc}")
+        return None
+    except ValueError as exc:
+        msg = str(exc)
+        if "exceeds the" in msg:
+            size = path.stat().st_size
+            report.unreadable.append(
+                f"{path}: {size} bytes exceeds the {MAX_FILE_BYTES} byte limit"
+            )
+        elif "malformed JSON" in msg:
+            report.parse_errors.append(f"{path}: invalid JSON: {exc.__cause__ or exc}")
+        elif "not valid UTF-8" in msg:
+            report.parse_errors.append(f"{path}: not valid UTF-8: {exc.__cause__ or exc}")
+        else:
+            report.unreadable.append(f"{path}: cannot read: {exc}")
         return None
 
 
 def load_toml(path: Path, report: Report) -> Any | None:
     """Parse a TOML file, recording parse failures."""
-    text = read_text(path, report)
-    if text is None:
+    if not path.is_file():
+        report.unreadable.append(f"{path}: file is missing")
         return None
     try:
-        return tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
-        report.parse_errors.append(f"{path}: invalid TOML: {exc}")
+        return _io_read_toml_bounded(
+            path,
+            limit=MAX_FILE_BYTES,
+            display_name=str(path),
+        )
+    except OSError as exc:
+        report.unreadable.append(f"{path}: cannot read: {exc}")
+        return None
+    except ValueError as exc:
+        msg = str(exc)
+        if "exceeds the" in msg:
+            size = path.stat().st_size
+            report.unreadable.append(
+                f"{path}: {size} bytes exceeds the {MAX_FILE_BYTES} byte limit"
+            )
+        elif "malformed TOML" in msg:
+            report.parse_errors.append(f"{path}: invalid TOML: {exc.__cause__ or exc}")
+        elif "not valid UTF-8" in msg:
+            report.parse_errors.append(f"{path}: not valid UTF-8: {exc.__cause__ or exc}")
+        else:
+            report.unreadable.append(f"{path}: cannot read: {exc}")
         return None
 
 
@@ -287,7 +347,7 @@ def _clip(items: list[str]) -> str:
 
 
 def _has_secret(text: str) -> bool:
-    return any(pattern.search(text) for pattern in SECRET_PATTERNS)
+    return _io_contains_sensitive_text(text, SECRET_PATTERNS)
 
 
 # ── pip (backend/requirements.txt) ────────────────────────────────────────────

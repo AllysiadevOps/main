@@ -38,12 +38,14 @@ from errors import (
     DEPENDENCY_UNAVAILABLE,
     FORBIDDEN,
     FORBIDDEN_ORIGIN,
+    GONE,
     INTERNAL_ERROR,
     MALFORMED_INPUT,
     NOT_FOUND,
     OVERSIZED_INPUT,
     PAYLOAD_TOO_LARGE,
     RATE_LIMITED,
+    UNSUPPORTED_INPUT,
     UNSUPPORTED_MEDIA_TYPE,
     VALIDATION_ERROR,
     classify_cli_error,
@@ -100,6 +102,11 @@ from metadata_errors import (
 from schema import discover_schemas, resolve_schema, validate_selective_disclosure_input
 from verification_receipt import build_verification_receipt
 from stego import canonical_metadata_hash, embed_metadata, extract_metadata, sha256_file
+from capture_attestation import (
+    canonical_attestation_hash,
+    decode_attestation,
+    verify_device_commitment,
+)
 from c2pa import (
     C2paParseError,
     C2paTrustStatus,
@@ -236,15 +243,22 @@ def create_app() -> Flask:
         service_version=config.release_id,
     )
     app = Flask(__name__)
+    # Initialize verifier cache using config
     app.extensions["verifier_cache"] = VerifierCache(
         max_size=config.verifier_cache_max_size,
         positive_ttl_seconds=config.verifier_cache_positive_ttl_seconds,
         negative_ttl_seconds=config.verifier_cache_negative_ttl_seconds,
     )
+    # Log config summary on startup
+    LOGGER.info("App started with config summary")
+    log_structured(LOGGER, logging.INFO, {"event": "app_start", "config": config.redacted_summary()})
+    # Continue setup
     CORS(app, **cors_kwargs(config.cors_origins))
     app.config["MAX_CONTENT_LENGTH"] = config.max_content_length
     # Propagate the request id through every response (header + JSON body).
     register_request_id_propagation(app)
+    
+
 
     # ------------------------------------------------------------------ #
     # Rate limiting                                                        #
@@ -1013,7 +1027,28 @@ def create_app() -> Flask:
                 status=400,
             )
 
-        return ok_response({"events": find_proof_events_by_video(video_hash)})
+        limit = request.args.get("limit", "25")
+        cursor_token = request.args.get("cursor")
+        try:
+            parsed_limit = int(limit)
+        except ValueError:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="limit must be an integer",
+                status=400,
+            )
+
+        cursor_id = None
+        if cursor_token is not None and cursor_token != "":
+            try:
+                cursor_id = decode_proof_events_cursor(cursor_token)
+            except ValueError:
+                return jsonify({"error": "invalid cursor"}), 400
+
+        events, next_cursor = find_proof_events_by_video(
+            video_hash, parsed_limit, cursor_id=cursor_id
+        )
+        return ok_response({"events": events, "nextCursor": next_cursor})
 
     @app.get("/api/lineage/by-actor/<actor_address>")
     def lineage_by_actor(actor_address: str):
@@ -1024,6 +1059,25 @@ def create_app() -> Flask:
             return jsonify({"error": "limit must be an integer"}), 400
 
         return jsonify({"ok": True, "events": find_lineage_by_actor(actor_address, parsed_limit)})
+
+    @app.get("/api/lineage/<output_digest>")
+    def lineage_by_output_digest(output_digest: str):
+        if not is_hex_32(output_digest):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="output_digest must be a 32-byte hex string",
+                status=400,
+            )
+
+        record = find_lineage_by_output_digest(output_digest)
+        if not record:
+            return error_response(
+                code=NOT_FOUND,
+                message="lineage record not found",
+                status=404,
+            )
+
+        return ok_response({"record": record})
 
     @app.post("/api/proofs/lineage")
     def register_lineage_event():
@@ -1111,7 +1165,7 @@ def create_app() -> Flask:
             try:
                 events = []
                 if video_hash:
-                    events = find_proof_events_by_video(video_hash)
+                    events, _ = find_proof_events_by_video(video_hash)
                     if proof_id:
                         events = [e for e in events if e.get("proof_id") == proof_id]
                 else:
@@ -1677,15 +1731,36 @@ def create_app() -> Flask:
         job = get_job(job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
+        if job.get("purged"):
+            return error_response(
+                code=GONE,
+                message="Job output has been purged",
+                status=410,
+            )
         if job["type"] != "embed" or job["status"] != "completed":
             return jsonify({"error": "No output available for download"}), 400
             
         output_path = get_job_output_path(job_id)
         if not output_path.exists():
-            return jsonify({"error": "Output file missing"}), 404
+            return error_response(
+                code=GONE,
+                message="Job output has been purged",
+                status=410,
+            )
             
         result = job.get("result", {})
-        response = send_file(output_path, mimetype="video/mp4", as_attachment=True, download_name="harpocrates-evidence.mp4")
+        etag = result.get("embedded_hash")
+        if not etag:
+            etag = sha256_file(output_path)
+            
+        response = send_file(
+            output_path,
+            mimetype="video/mp4",
+            as_attachment=True,
+            download_name="harpocrates-evidence.mp4",
+            conditional=True,
+            etag=etag,
+        )
         if result.get("source_hash"):
             response.headers["X-Harpocrates-Source-Hash"] = result["source_hash"]
         if result.get("embedded_hash"):
@@ -1846,6 +1921,115 @@ def create_app() -> Flask:
             except ValueError as exc:
                 return jsonify({"error": str(exc)}), 400
         return jsonify(response)
+
+    @app.post("/api/capture-attestation/verify")
+    @limiter.limit(config.ratelimit_verify)
+    def verify_capture_attestation():
+        if _enforce_json_size() > config.max_json_bytes:
+            return jsonify({"error": "JSON payload exceeds size limit"}), 413
+
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="JSON body is required",
+                status=400,
+                cli_code=MALFORMED_INPUT,
+            )
+
+        if "attestation" not in payload or payload["attestation"] is None:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="attestation is required",
+                status=400,
+                cli_code=MALFORMED_INPUT,
+            )
+
+        attestation_raw = payload["attestation"]
+        if not isinstance(attestation_raw, dict):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="attestation must be a JSON object",
+                status=400,
+                cli_code=MALFORMED_INPUT,
+            )
+
+        evidence_digest = payload.get("evidence_digest")
+        if evidence_digest is None:
+            evidence_digest = payload.get("evidenceDigest")
+
+        if evidence_digest is None:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="evidence_digest is required",
+                status=400,
+                cli_code=MALFORMED_INPUT,
+            )
+
+        if not is_hex_32(evidence_digest):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="evidence_digest must be a 32-byte hex string",
+                status=400,
+                cli_code=MALFORMED_INPUT,
+            )
+
+        device_key = payload.get("device_key")
+        if device_key is None:
+            device_key = payload.get("deviceKey")
+
+        if device_key is not None and not is_hex_32(device_key):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="device_key must be a 32-byte hex string",
+                status=400,
+                cli_code=MALFORMED_INPUT,
+            )
+
+        try:
+            decoded = decode_attestation(attestation_raw)
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="malformed attestation payload",
+                status=400,
+                cli_code=MALFORMED_INPUT,
+            )
+
+        try:
+            attestation_hash = canonical_attestation_hash(decoded)
+        except (ValueError, TypeError):
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="malformed attestation payload",
+                status=400,
+                cli_code=MALFORMED_INPUT,
+            )
+
+        evidence_binding_valid = (
+            decoded.evidence_digest_binding.lower() == evidence_digest.lower()
+        )
+        checks: dict[str, bool] = {
+            "evidence_binding": evidence_binding_valid,
+        }
+
+        if device_key is not None:
+            try:
+                checks["device_commitment"] = verify_device_commitment(
+                    decoded, bytes.fromhex(device_key)
+                )
+            except (ValueError, TypeError):
+                checks["device_commitment"] = False
+
+        valid = all(checks.values())
+
+        return ok_response(
+            {
+                "valid": valid,
+                "attestation_hash": attestation_hash,
+                "checks": checks,
+            }
+        )
 
     # -----------------------------------------------------------------------
     # C2PA interoperability

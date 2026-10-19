@@ -357,6 +357,80 @@ pub struct VerifierCircuitVersions {
     pub set_at: u64,
 }
 
+/// Configuration snapshot for verifier-backed operations.
+///
+/// Loaded once at the start of verified registration calls to reduce repeated
+/// storage reads across validation helpers.
+#[derive(Clone, Debug)]
+pub struct VerifierContext {
+    pub verifier: Option<Address>,
+    pub circuit_versions: (u32, u32),
+}
+
+impl VerifierContext {
+    pub fn load(env: &Env) -> Self {
+        let verifier = env.storage().persistent().get(&DataKey::Verifier);
+        let circuit_versions = get_verifier_circuit_versions_raw(env);
+        Self {
+            verifier,
+            circuit_versions,
+        }
+    }
+
+    pub fn verifier(&self, env: &Env) -> &Address {
+        self.verifier
+            .as_ref()
+            .unwrap_or_else(|| panic_with_error!(env, RegistryError::VerifierNotSet))
+    }
+
+    pub fn require_supported_circuit_version(&self, env: &Env, circuit_version: u32) {
+        if circuit_version < MIN_SUPPORTED_CIRCUIT_VERSION
+            || circuit_version > MAX_SUPPORTED_CIRCUIT_VERSION
+        {
+            panic_with_error!(env, RegistryError::UnsupportedCircuitVersion);
+        }
+
+        let (min_version, max_version) = self.circuit_versions;
+        if circuit_version < min_version || circuit_version > max_version {
+            panic_with_error!(env, RegistryError::UnsupportedCircuitVersion);
+        }
+    }
+
+    pub fn require_verified_proof(
+        &self,
+        env: &Env,
+        circuit_version: u32,
+        public_inputs: Bytes,
+        proof: Bytes,
+    ) {
+        self.require_supported_circuit_version(env, circuit_version);
+
+        if proof.is_empty() {
+            panic_with_error!(env, RegistryError::InvalidProof);
+        }
+
+        let verifier = self.verifier(env);
+        if !verify_external_proof(env, verifier, public_inputs, proof) {
+            panic_with_error!(env, RegistryError::InvalidProof);
+        }
+    }
+
+    pub fn has_nullifier(&self, env: &Env, nullifier: &BytesN<32>) -> bool {
+        if let Some(ref verifier) = self.verifier {
+            if env
+                .storage()
+                .persistent()
+                .has(&DataKey::VerifierNullifier(verifier.clone(), nullifier.clone()))
+            {
+                return true;
+            }
+        }
+        env.storage()
+            .persistent()
+            .has(&DataKey::Nullifier(nullifier.clone()))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Timelocked verifier and policy administration (#86)
 // ---------------------------------------------------------------------------
@@ -393,6 +467,17 @@ pub struct TimelockProposal {
 pub const DEFAULT_TIMELOCK_MIN_DELAY_SECS: u64 = 86_400;
 pub const MAX_TIMELOCK_MIN_DELAY_SECS: u64 = 604_800;
 pub const MAX_PENDING_TIMELOCK_PROPOSALS: u32 = 16;
+/// Maximum number of proposals a single `list_timelock_proposals` page may return.
+pub const MAX_TIMELOCK_PROPOSALS_PAGE: u32 = 25;
+
+/// Paginated result from `list_timelock_proposals`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TimelockProposalPage {
+    pub proposals: SorobanVec<TimelockProposal>,
+    /// Cursor for the next page (`Some(next_cursor)`), or `None` if end reached.
+    pub next_cursor: Option<u32>,
+}
 
 /// A narrowly scoped, expiring authority to act for `grantor`.
 #[contracttype]
@@ -452,6 +537,29 @@ pub enum ProofVerificationStatus {
     Revoked,
     Expired,
     NotFound,
+}
+
+/// Comprehensive proof assurance view combining status, tier, timestamp assurance,
+/// dispute count, envelope version, and issuer verifiability in a single call.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofAssurance {
+    pub status: ProofVerificationStatus,
+    pub tier: u32,
+    pub timestamp_assurance_level: u32,
+    pub open_dispute_count: u32,
+    pub envelope_version: u32,
+    pub issuer_verifiable: bool,
+}
+
+impl ProofAssurance {
+    pub fn timestamp_assurance(&self) -> u32 {
+        self.timestamp_assurance_level
+    }
+
+    pub fn is_issuer_verifiable(&self) -> bool {
+        self.issuer_verifiable
+    }
 }
 
 /// On-chain lineage edge for a verifiable derivative.
@@ -703,6 +811,14 @@ pub struct IssuerRevoked {
     pub issuer: Address,
 }
 
+#[contractevent(topics = ["issuer", "metadata"])]
+pub struct IssuerMetadataUpdated {
+    #[topic]
+    pub issuer: Address,
+    pub previous_metadata_hash: BytesN<32>,
+    pub new_metadata_hash: BytesN<32>,
+}
+
 /// Emitted when an active issuer key rotates to a replacement (#323).
 ///
 /// Carries addresses, ledger time, and the grace bound only — never key
@@ -863,6 +979,8 @@ pub struct LineageRegistered {
 
 /// Maximum number of simultaneously Open disputes allowed per proof.
 pub const MAX_OPEN_DISPUTES_PER_PROOF: u32 = 4;
+/// Maximum number of simultaneously Open disputes allowed across all proofs per reporter.
+pub const MAX_OPEN_DISPUTES_PER_REPORTER: u32 = 5;
 /// Minimum seconds between consecutive disputes by the same reporter on the
 /// same proof (24 hours).
 pub const REPORTER_COOLDOWN_SECS: u64 = 86_400;
@@ -911,10 +1029,12 @@ pub struct DisputeRecord {
     /// Categorised reason for the dispute.
     pub reason: DisputeReason,
     /// Privacy-safe commitment: H(reporter_address_bytes || proof_id_bytes).
-    /// The reporter's actual address is never stored on-chain.
+    /// Used for the per-proof cooldown and emitted in events.
     pub reporter_hash: BytesN<32>,
     /// Off-chain commitment to the reporter's full evidence submission.
     pub commitment_hash: BytesN<32>,
+    /// Address of the reporter who opened this dispute.
+    pub reporter: Address,
     /// Current lifecycle state.
     pub status: DisputeStatus,
     /// Ledger timestamp when the dispute was opened.
@@ -1221,6 +1341,9 @@ pub struct GuardianSet {
     pub guardian: Address,
 }
 
+#[contractevent(topics = ["guardian", "clear"])]
+pub struct GuardianCleared {}
+
 #[contractevent(topics = ["admin", "propose"])]
 pub struct AdminProposed {
     #[topic]
@@ -1455,6 +1578,9 @@ pub enum DataKey {
     /// Counts open (non-terminal) disputes for a proof_id (#dispute).
     /// Used to enforce MAX_OPEN_DISPUTES_PER_PROOF.
     ProofOpenDisputeCount(BytesN<32>),
+    /// Counts open (non-terminal) disputes across all proofs for a reporter Address.
+    /// Used to enforce MAX_OPEN_DISPUTES_PER_REPORTER.
+    ReporterOpenDisputeCount(Address),
     /// Tracks the last-opened timestamp for a reporter_hash/proof pair.
     /// Key is the caller-supplied `reporter_hash` (a 32-byte commitment).
     ReporterCooldown(BytesN<32>),
@@ -1614,6 +1740,8 @@ pub enum RegistryError {
     /// than [`verifier_inputs::EXPECTED_CIRCUIT_VERSION`], or was the superseded
     /// bare 224-byte frame that commits no circuit version at all (#368).
     CircuitVersionMismatch = 87,
+    /// The reporter reached `MAX_OPEN_DISPUTES_PER_REPORTER`.
+    ReporterDisputesSaturated = 88,
 }
 
 #[contract]
@@ -2085,6 +2213,43 @@ impl HarpocratesRegistry {
         IssuerRevoked { issuer }.publish(&env);
     }
 
+    /// Update an active issuer's metadata hash.
+    ///
+    /// Requires admin auth and that `issuer` is active.
+    /// Only the metadata hash changes; active status and any rotation grace
+    /// records are preserved.
+    ///
+    /// # Reverts
+    ///
+    /// - `Unauthorized` if `admin` is not the current admin
+    /// - `UnknownIssuer` if `issuer` does not exist or is inactive
+    pub fn update_issuer_metadata(
+        env: Env,
+        admin: Address,
+        issuer: Address,
+        metadata_hash: BytesN<32>,
+    ) {
+        require_admin(&env, &admin);
+
+        let mut record = get_issuer_record(&env, &issuer);
+        if !record.active {
+            panic_with_error!(&env, RegistryError::UnknownIssuer);
+        }
+
+        let previous_metadata_hash = record.metadata_hash;
+        record.metadata_hash = metadata_hash.clone();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Issuer(issuer.clone()), &record);
+
+        IssuerMetadataUpdated {
+            issuer,
+            previous_metadata_hash,
+            new_metadata_hash: metadata_hash,
+        }
+        .publish(&env);
+    }
+
     /// Rotate an active issuer key to a replacement, opening a bounded grace
     /// window over the retiring key's pre-rotation evidence (#323).
     ///
@@ -2407,6 +2572,59 @@ impl HarpocratesRegistry {
             .unwrap_or(0u32)
     }
 
+    /// Enumerate timelocked proposals across sequential IDs.
+    ///
+    /// - `cursor`: ID offset to start scanning from (e.g. 0 or 1 starts at first proposal).
+    ///   Proposals use 1-based sequential IDs. If `cursor == 0`, scanning begins at ID 1.
+    /// - `limit`: maximum number of proposals to return; capped at `MAX_TIMELOCK_PROPOSALS_PAGE`.
+    ///   If 0 or exceeding the cap, `limit` is clamped to `MAX_TIMELOCK_PROPOSALS_PAGE`.
+    /// - Non-existent/deleted proposals are skipped.
+    /// - Read-only query; no auth required.
+    pub fn list_timelock_proposals(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> TimelockProposalPage {
+        let effective_limit = if limit == 0 || limit > MAX_TIMELOCK_PROPOSALS_PAGE {
+            MAX_TIMELOCK_PROPOSALS_PAGE
+        } else {
+            limit
+        };
+
+        let total_seq: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProposalSeq)
+            .unwrap_or(0u32);
+
+        let mut proposals = SorobanVec::new(&env);
+        let mut next_cursor: Option<u32> = None;
+
+        let mut id = if cursor == 0 { 1u32 } else { cursor };
+
+        while id <= total_seq {
+            if let Some(proposal) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, TimelockProposal>(&DataKey::Proposal(id))
+            {
+                proposals.push_back(proposal);
+                if proposals.len() == effective_limit {
+                    if id < total_seq {
+                        next_cursor = Some(id + 1);
+                    }
+                    break;
+                }
+            }
+            id = id.saturating_add(1);
+        }
+
+        TimelockProposalPage {
+            proposals,
+            next_cursor,
+        }
+    }
+
     pub fn get_timelock_min_delay_secs(env: Env) -> u64 {
         get_timelock_min_delay(&env)
     }
@@ -2467,6 +2685,34 @@ impl HarpocratesRegistry {
             statuses.push_back(Self::get_proof_status(env.clone(), proof_id));
         }
         statuses
+    }
+
+    /// Single read call that summarises everything a verifier needs to trust a proof:
+    /// verification status, tier, timestamp assurance level, open dispute count,
+    /// metadata envelope version, and issuer verifiability.
+    ///
+    /// Returns `None` if the proof is not found.
+    pub fn get_proof_assurance(env: Env, proof_id: BytesN<32>) -> Option<ProofAssurance> {
+        let record: ProofRecord = env.storage().persistent().get(&DataKey::Proof(proof_id.clone()))?;
+        let status = Self::get_proof_status(env.clone(), proof_id.clone());
+        let timestamp_assurance_level = Self::get_timestamp_claim(env.clone(), proof_id.clone())
+            .map(|c| c.assurance)
+            .unwrap_or(TIMESTAMP_ASSURANCE_NONE);
+        let open_dispute_count = Self::get_open_dispute_count(env.clone(), proof_id.clone());
+        let envelope_version = Self::resolve_metadata_envelope_ver(env.clone(), proof_id.clone());
+        let issuer_verifiable = match record.issuer {
+            Some(issuer) => Self::is_issuer_verifiable(env.clone(), issuer),
+            None => false,
+        };
+
+        Some(ProofAssurance {
+            status,
+            tier: record.tier,
+            timestamp_assurance_level,
+            open_dispute_count,
+            envelope_version,
+            issuer_verifiable,
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -2556,6 +2802,7 @@ impl HarpocratesRegistry {
         public_inputs: Bytes,
         proof: Bytes,
     ) -> ProofRecord {
+        let verifier_ctx = VerifierContext::load(&env);
         require_domain_unpaused(&env, PAUSE_DOMAIN_TIER1_REGISTRATION);
         require_unique(&env, &proof_id, &video_hash);
 
@@ -2585,14 +2832,12 @@ impl HarpocratesRegistry {
                 panic_with_error!(&env, RegistryError::StaleEpoch);
             }
 
-            let verifier: Address = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Verifier)
-                .unwrap_or_else(|| panic_with_error!(&env, RegistryError::VerifierNotSet));
-            require_verified_proof(
+            let verifier = verifier_ctx.verifier(&env);
+            if verifier_ctx.has_nullifier(&env, &parsed.nullifier) {
+                panic_with_error!(&env, RegistryError::DuplicateNullifier);
+            }
+            verifier_ctx.require_verified_proof(
                 &env,
-                &verifier,
                 CIRCUIT_VERSION_SILENT_WITNESS_V2,
                 public_inputs,
                 proof,
@@ -2600,7 +2845,7 @@ impl HarpocratesRegistry {
 
             env.storage()
                 .persistent()
-                .set(&DataKey::VerifierNullifier(verifier, parsed.nullifier.clone()), &true);
+                .set(&DataKey::VerifierNullifier(verifier.clone(), parsed.nullifier.clone()), &true);
 
             let expires_at = compute_expires_at(&env);
             save_record(
@@ -2631,14 +2876,12 @@ impl HarpocratesRegistry {
             }
             require_active_credential_root(&env, &parsed.credential_root);
 
-            let verifier: Address = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Verifier)
-                .unwrap_or_else(|| panic_with_error!(&env, RegistryError::VerifierNotSet));
-            require_verified_proof(
+            let verifier = verifier_ctx.verifier(&env);
+            if verifier_ctx.has_nullifier(&env, &parsed.nullifier) {
+                panic_with_error!(&env, RegistryError::DuplicateNullifier);
+            }
+            verifier_ctx.require_verified_proof(
                 &env,
-                &verifier,
                 CIRCUIT_VERSION_SILENT_WITNESS_V1,
                 public_inputs,
                 proof,
@@ -2646,7 +2889,7 @@ impl HarpocratesRegistry {
 
             env.storage()
                 .persistent()
-                .set(&DataKey::VerifierNullifier(verifier, parsed.nullifier.clone()), &true);
+                .set(&DataKey::VerifierNullifier(verifier.clone(), parsed.nullifier.clone()), &true);
 
             let expires_at = compute_expires_at(&env);
             save_record(
@@ -2714,6 +2957,7 @@ impl HarpocratesRegistry {
         proof: Bytes,
         video_hashes: soroban_sdk::Vec<BytesN<32>>,
     ) -> soroban_sdk::Vec<ProofRecord> {
+        let verifier_ctx = VerifierContext::load(&env);
         let batch_size = video_hashes.len();
 
         if batch_size == 0 || batch_size > MAX_AGGREGATION_SIZE {
@@ -2733,14 +2977,9 @@ impl HarpocratesRegistry {
         // 2. Verify the aggregated UltraHonk proof through the configured
         //    verifier contract, validating the aggregation circuit version at
         //    the trust boundary first.
-        let verifier: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Verifier)
-            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::VerifierNotSet));
-        require_verified_proof(
+        let verifier = verifier_ctx.verifier(&env);
+        verifier_ctx.require_verified_proof(
             &env,
-            &verifier,
             CIRCUIT_VERSION_AGGREGATION,
             public_inputs,
             proof,
@@ -2794,24 +3033,12 @@ impl HarpocratesRegistry {
             }
 
             // Check nullifier uniqueness.
-            let verifier: Address = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Verifier)
-                .unwrap_or_else(|| panic_with_error!(&env, RegistryError::VerifierNotSet));
-
-            if Self::has_nullifier(env.clone(), verifier.clone(), element.nullifier.clone()) {
+            if verifier_ctx.has_nullifier(&env, &element.nullifier) {
                 panic_with_error!(&env, RegistryError::DuplicateNullifier);
             }
         }
 
         // All checks passed — persist every element.
-        let verifier: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Verifier)
-            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::VerifierNotSet));
-
         for i in 0..batch_size {
             let element = &parsed.elements[i as usize];
             let video_hash = video_hashes.get(i).unwrap();
@@ -3849,6 +4076,13 @@ impl HarpocratesRegistry {
         GuardianSet { guardian }.publish(&env);
     }
 
+    /// Remove the emergency-pause guardian role. Admin-only.
+    pub fn clear_guardian(env: Env, admin: Address) {
+        require_admin(&env, &admin);
+        env.storage().persistent().remove(&DataKey::Guardian);
+        GuardianCleared {}.publish(&env);
+    }
+
     /// The currently configured guardian, if any.
     pub fn get_guardian(env: Env) -> Option<Address> {
         env.storage().persistent().get(&DataKey::Guardian)
@@ -4293,6 +4527,17 @@ impl HarpocratesRegistry {
             panic_with_error!(&env, RegistryError::TooManyOpenDisputes);
         }
 
+        // 3b. Cap open disputes per reporter across all proofs.
+        let reporter_count_key = DataKey::ReporterOpenDisputeCount(reporter.clone());
+        let reporter_open_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&reporter_count_key)
+            .unwrap_or(0u32);
+        if reporter_open_count >= MAX_OPEN_DISPUTES_PER_REPORTER {
+            panic_with_error!(&env, RegistryError::ReporterDisputesSaturated);
+        }
+
         // 4. Reporter cooldown (keyed by the privacy-safe reporter_hash).
         let cooldown_key = DataKey::ReporterCooldown(reporter_hash.clone());
         let last_open: u64 = env
@@ -4318,6 +4563,7 @@ impl HarpocratesRegistry {
             reason,
             reporter_hash: reporter_hash.clone(),
             commitment_hash: commitment_hash.clone(),
+            reporter: reporter.clone(),
             status: DisputeStatus::Open,
             opened_at: now,
             respond_deadline,
@@ -4330,11 +4576,14 @@ impl HarpocratesRegistry {
             .persistent()
             .set(&DataKey::Dispute(dispute_id.clone()), &record);
 
-        // 8. Increment open-dispute counter.
+        // 8. Increment open-dispute counters (per proof and per reporter).
         env.storage().persistent().set(
             &DataKey::ProofOpenDisputeCount(proof_id.clone()),
             &(open_count + 1),
         );
+        env.storage()
+            .persistent()
+            .set(&reporter_count_key, &(reporter_open_count + 1));
 
         // 9. Emit event.
         DisputeOpened {
@@ -4458,8 +4707,9 @@ impl HarpocratesRegistry {
             .persistent()
             .set(&DataKey::Dispute(dispute_id.clone()), &record);
 
-        // Decrement open-dispute counter.
+        // Decrement open-dispute counters (per proof and per reporter).
         decrement_open_dispute_count(&env, &record.proof_id);
+        decrement_reporter_open_dispute_count(&env, &record.reporter);
 
         DisputeResolved {
             dispute_id,
@@ -4496,8 +4746,9 @@ impl HarpocratesRegistry {
             .persistent()
             .set(&DataKey::Dispute(dispute_id.clone()), &record);
 
-        // Decrement open-dispute counter.
+        // Decrement open-dispute counters (per proof and per reporter).
         decrement_open_dispute_count(&env, &record.proof_id);
+        decrement_reporter_open_dispute_count(&env, &record.reporter);
 
         DisputeDismissed {
             dispute_id,
@@ -4569,8 +4820,9 @@ impl HarpocratesRegistry {
         // Record the reverse supersession direction for cycle detection.
         record_supersession_direction(&env, &record.proof_id, &superseding_proof_id);
 
-        // Decrement open-dispute counter.
+        // Decrement open-dispute counters (per proof and per reporter).
         decrement_open_dispute_count(&env, &record.proof_id);
+        decrement_reporter_open_dispute_count(&env, &record.reporter);
 
         DisputeSuperseded {
             dispute_id,
@@ -4595,6 +4847,15 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .get(&DataKey::ProofOpenDisputeCount(proof_id))
+            .unwrap_or(0u32)
+    }
+
+    /// Return the number of currently open (non-terminal) disputes opened by
+    /// `reporter` across all proofs.
+    pub fn get_reporter_open_dispute_count(env: Env, reporter: Address) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ReporterOpenDisputeCount(reporter))
             .unwrap_or(0u32)
     }
 
@@ -5811,6 +6072,19 @@ fn decrement_open_dispute_count(env: &Env, proof_id: &BytesN<32>) {
     }
 }
 
+/// Decrement the per-reporter open-dispute counter. Saturates at 0 and
+/// removes the key when it reaches zero so idle reporters hold no storage.
+fn decrement_reporter_open_dispute_count(env: &Env, reporter: &Address) {
+    let key = DataKey::ReporterOpenDisputeCount(reporter.clone());
+    let count: u32 = env.storage().persistent().get(&key).unwrap_or(0u32);
+    let new_count = count.saturating_sub(1);
+    if new_count == 0 {
+        env.storage().persistent().remove(&key);
+    } else {
+        env.storage().persistent().set(&key, &new_count);
+    }
+}
+
 /// Depth-1 cycle guard for supersession.
 ///
 /// Returns `true` if allowing `superseding_proof_id` to supersede
@@ -6201,3 +6475,5 @@ mod test_list_verifiers;
 mod test_upgrade_compat;
 #[cfg(test)]
 mod test_verifier_versions;
+#[cfg(test)]
+mod test_ttl;

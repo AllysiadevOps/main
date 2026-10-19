@@ -229,11 +229,8 @@ jobs:
       - name: Vectors are byte-identical to their generator
         # A hand-edited corpus would silently weaken every layer's assertions.
         run: |
-          cp zk/vectors/verifier_conformance_v1.json /tmp/committed-v1.json
-          cp zk/vectors/verifier_conformance_v2.json /tmp/committed-v2.json
-          python zk/vectors/generate_vectors.py
-          diff -u /tmp/committed-v1.json zk/vectors/verifier_conformance_v1.json
-          diff -u /tmp/committed-v2.json zk/vectors/verifier_conformance_v2.json
+          python zk/vectors/generate_vectors.py --check
+          python zk/vectors/generate_malformed_public_inputs.py --check
 
       - name: Python conformance runner
         working-directory: backend

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Wallet, X } from 'lucide-react'
 import EvilEye from './components/EvilEye'
 import BatchVerificationWorkspace from './components/BatchVerificationWorkspace'

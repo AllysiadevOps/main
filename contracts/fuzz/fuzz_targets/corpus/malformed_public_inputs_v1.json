@@ -1,0 +1,1 @@
+{ "format": "harpocrates.malformed-public-inputs", "version": 1, "codec": "hpx-vi/1", "description": "Shared malformed public-input hex vectors for the Harpocrates verifier boundary.", "cases": [] }

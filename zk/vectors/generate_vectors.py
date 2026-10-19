@@ -21,9 +21,13 @@ docs/zk-conformance-vectors.md.
 
 from __future__ import annotations
 
+import argparse
+from collections.abc import Sequence
+import difflib
 import hashlib
 import json
 from pathlib import Path
+import sys
 
 OUT_PATH = Path(__file__).resolve().parent / "verifier_conformance_v1.json"
 OUT_PATH_V2 = Path(__file__).resolve().parent / "verifier_conformance_v2.json"
@@ -1109,10 +1113,21 @@ def build_document_v2() -> dict[str, object]:
     }
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="verify committed vector files match generated output without writing",
+    )
+    if argv is None:
+        argv = sys.argv[1:] if Path(sys.argv[0]).name == Path(__file__).name else []
+    args = parser.parse_args(list(argv))
+
     documents = [build_document(), build_document_v2()]
     outputs = [OUT_PATH, OUT_PATH_V2]
     seen: set[str] = set()
+    mismatched = False
     for document, output in zip(documents, outputs):
         seen.clear()
         for entry in document["cases"]:  # type: ignore[index]
@@ -1121,12 +1136,41 @@ def main() -> None:
                 raise SystemExit(f"duplicate case id: {case_id}")
             seen.add(case_id)
 
-        output.write_text(
-            json.dumps(document, indent=2, sort_keys=False) + "\n",
-            encoding="utf-8",
-        )
-        print(f"wrote {len(document['cases'])} cases to {output}")  # type: ignore[arg-type]
+        rendered = json.dumps(document, indent=2, sort_keys=False) + "\n"
+        if args.check:
+            if not output.is_file():
+                print(f"missing vector file: {output}", file=sys.stderr)
+                mismatched = True
+                continue
+            committed = output.read_text(encoding="utf-8")
+            if committed != rendered:
+                diff = "".join(
+                    difflib.unified_diff(
+                        committed.splitlines(keepends=True),
+                        rendered.splitlines(keepends=True),
+                        fromfile=f"{output.name} (committed)",
+                        tofile=f"{output.name} (generated)",
+                    )
+                )
+                print(
+                    f"{output} is out of date; regenerate with `{document['regenerate_with']}`:",
+                    file=sys.stderr,
+                )
+                print(diff, end="", file=sys.stderr)
+                mismatched = True
+            else:
+                print(f"verified {len(document['cases'])} cases in {output}")  # type: ignore[arg-type]
+        else:
+            output.write_text(
+                rendered,
+                encoding="utf-8",
+            )
+            print(f"wrote {len(document['cases'])} cases to {output}")  # type: ignore[arg-type]
+
+    if mismatched:
+        raise SystemExit(1)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main(sys.argv[1:]))

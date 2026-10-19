@@ -1,0 +1,10 @@
+[package]
+name = "contracts-fuzz"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+harpocrates-registry = { path = "../harpocrates-registry" }
+
+[dev-dependencies]
+cargo-fuzz = "0.11"

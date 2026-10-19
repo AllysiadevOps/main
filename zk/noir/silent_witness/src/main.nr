@@ -1,25 +1,18 @@
-// ---------------------------------------------------------------------------
-// Canonical evidence digest algorithm identifiers.
-//
-// Each constant maps a well-known hash algorithm to a numeric identifier
-// that is bound into the evidence digest commitment inside the circuit.
-// This prevents proofs from being detached from the exact hashing algorithm
-// used to produce the evidence digest.
-//
-//   DIGEST_ALGORITHM_SHA256 = 0   - SHA-256 (FIPS 180-4)
-// ---------------------------------------------------------------------------
-global DIGEST_ALGORITHM_SHA256: Field = 0;
-global SCOPED_NULLIFIER_V1: Field = 0x00484152504f4352415445535f53434f5045445f4e554c4c49464945525f5631;
+use harpocrates_common::{
+    compute_scoped_nullifier,
+    DIGEST_ALGORITHM_SHA256,
+    DOMAIN_NETWORK_FIELD,
+    DOMAIN_PROTOCOL_FIELD,
+    DOMAIN_VERSION_FIELD,
+    expected_domain_tag,
+    SCOPED_NULLIFIER_V1,
+};
 
 // Circuit version committed to the proof envelope (#368). This must match
 // EXPECTED_CIRCUIT_VERSION in the Soroban registry, the Python codec, and the
 // TypeScript codec, so a proof can never be detached from the exact circuit
 // that produced it.
 global CURRENT_CIRCUIT_VERSION: u32 = 2;
-
-global DOMAIN_PROTOCOL_FIELD: Field = 0x261e9f6e39e3c1ae6aca9f29e84c10d59c82d5f4b40c21c1b7e3c01ad571c201;
-global DOMAIN_VERSION_FIELD: Field = 0x0c89eff4ec8e39a01e9f19547a0cc9dd7fd2a97d79ba4d94fd32e97a1f5ac623;
-global DOMAIN_NETWORK_FIELD: Field = 0x2a2c3f48ce2e3c2f1e6c89b18d64b5f5c1f88a59a0d9bc82cb61a1e8cb77a50f;
 
 fn main(
     credential_secret: Field,
@@ -96,20 +89,6 @@ fn main(
 //   zero_video_hash: hi = 0, lo = 0
 // ---------------------------------------------------------------------------
 
-// Derive the expected domain_tag from the embedded constants so tests can
-// reference it without repeating the derivation. This is a runtime function,
-// not a comptime global: nargo 1.0.0-beta.9 cannot evaluate
-// std::hash::pedersen_hash in a global initializer (it fails inside the
-// stdlib at multi_scalar_mul_array_return), and nothing outside the test
-// corpus reads this value.
-fn expected_domain_tag() -> Field {
-    std::hash::pedersen_hash([
-        DOMAIN_PROTOCOL_FIELD,
-        DOMAIN_VERSION_FIELD,
-        DOMAIN_NETWORK_FIELD,
-    ])
-}
-
 // Public input ordering expected by the Soroban verifier:
 //   [0] video_hash_hi
 //   [1] video_hash_lo
@@ -120,21 +99,6 @@ fn expected_domain_tag() -> Field {
 //   [6] domain_tag
 //   [7] circuit_version    (added by #368)
 // ---------------------------------------------------------------------------
-
-/// Compute the scoped nullifier for given inputs.
-/// Exported for test vector computation.
-fn compute_scoped_nullifier(
-    cs: Field,
-    ns: Field,
-    vhi: Field,
-    vlo: Field,
-    scope: Field,
-    ep: Field,
-) -> Field {
-    let scope_hash = std::hash::pedersen_hash([SCOPED_NULLIFIER_V1, scope, ep]);
-    let evidence = std::hash::pedersen_hash([DIGEST_ALGORITHM_SHA256, vhi, vlo, scope_hash]);
-    std::hash::pedersen_hash([cs, ns, evidence])
-}
 
 // ============================================================
 // Positive: well-formed witness

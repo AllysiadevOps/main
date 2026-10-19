@@ -34,6 +34,15 @@ except ImportError:  # pragma: no cover
     print("pyyaml is required: pip install pyyaml", file=sys.stderr)
     sys.exit(1)
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from devx._io import (
+    find_sensitive_match as _io_find_sensitive_match,
+    read_text_bounded as _io_read_text_bounded,
+)
+
 MAX_FILE_BYTES = 64 * 1024  # 64 KiB
 ALLOWED_INTERVALS = {"weekly", "monthly"}
 MAX_PR_LIMIT = 10
@@ -58,12 +67,12 @@ class DependabotConfigError(Exception):
 
 
 def _check_sensitive_text(raw_text: str) -> None:
-    for pat in SENSITIVE_PATTERNS:
-        match = pat.search(raw_text)
-        if match:
-            raise DependabotConfigError(
-                f"forbidden credential pattern detected in config: {match.group(0)[:16]}..."
-            )
+    match_info = _io_find_sensitive_match(raw_text, SENSITIVE_PATTERNS)
+    if match_info is not None:
+        _pat, match = match_info
+        raise DependabotConfigError(
+            f"forbidden credential pattern detected in config: {match.group(0)[:16]}..."
+        )
 
 
 def validate_dependabot_config(data: Any) -> list[str]:
@@ -201,12 +210,20 @@ def check_file(path: Path) -> int:
         return 2
 
     try:
-        size = path.stat().st_size
-        if size > MAX_FILE_BYTES:
+        raw_text = _io_read_text_bounded(
+            path,
+            limit=MAX_FILE_BYTES,
+            display_name=str(path),
+        )
+    except OSError as e:
+        print(f"error: cannot read {path}: {e}", file=sys.stderr)
+        return 2
+    except ValueError as e:
+        msg = str(e)
+        if "exceeds the" in msg:
+            size = path.stat().st_size
             print(f"error: file size {size} exceeds limit of {MAX_FILE_BYTES} bytes", file=sys.stderr)
             return 1
-        raw_text = path.read_text(encoding="utf-8")
-    except OSError as e:
         print(f"error: cannot read {path}: {e}", file=sys.stderr)
         return 2
 

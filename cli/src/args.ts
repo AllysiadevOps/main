@@ -1,6 +1,6 @@
 import { parseArgs } from 'node:util'
 
-export type Command = 'verify' | 'manifest' | 'hash' | 'verify-receipt' | 'c2pa' | 'help'
+export type Command = 'verify' | 'manifest' | 'hash' | 'verify-receipt' | 'c2pa' | 'verify-lineage' | 'help'
 
 export interface ParsedArgs {
   command: Command
@@ -73,6 +73,43 @@ const COMMAND_OPTIONS: Record<Exclude<Command, 'help'>, OptionSet> = {
     title: text,
     debug: toggle,
   },
+  'verify-lineage': {
+    'output-digest': text,
+    outputDigest: text,
+    'contract-id': text,
+    contractId: text,
+    'rpc-url': text,
+    rpcUrl: text,
+    'source-address': text,
+    sourceAddress: text,
+    network: text,
+    output: alias('o'),
+    debug: toggle,
+  },
+}
+
+// Environment variable defaults for flags that are otherwise required on every call.
+// Explicit flags always take precedence over these values.
+const ENV_DEFAULTS: Record<Exclude<Command, 'help'>, { keys: string[]; env: string }> = {
+  verify: {
+    keys: ['rpc-url', 'rpcUrl'],
+    env: 'HARPOCRATES_RPC_URL',
+  },
+  manifest: {
+    keys: ['contract-id', 'contractId'],
+    env: 'HARPOCRATES_CONTRACT_ID',
+  },
+}
+
+function applyEnvDefaults(command: Exclude<Command, 'help'>, flags: Record<string, string>): void {
+  const spec = ENV_DEFAULTS[command]
+  if (!spec) return
+  const hasFlag = spec.keys.some((key) => flags[key] !== undefined)
+  if (hasFlag) return
+  const envValue = process.env[spec.env]
+  if (envValue !== undefined && envValue !== '') {
+    flags[spec.keys[0]] = envValue
+  }
 }
 
 function describeUsageError(command: string, err: unknown): string {
@@ -110,5 +147,8 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
   for (const [key, value] of Object.entries(values)) {
     if (value !== undefined) flags[key] = String(value)
   }
+
+  applyEnvDefaults(command as Exclude<Command, 'help'>, flags)
+
   return { command: command as Command, flags }
 }

@@ -13,6 +13,13 @@
 //! names the offending case id, so mismatch diagnosis does not require
 //! re-deriving which layer is wrong.
 //!
+//! The companion malformed-hex corpus
+//! (`zk/vectors/malformed_public_inputs_v1.json`) is driven too: every case is
+//! asserted to fail the strict hex boundary with its expected
+//! `malformed_hex` category, and the raw presentation bytes of every case are
+//! fed to `classify_public_inputs` to prove the on-chain classifier never
+//! accepts a smuggled presentation for any schema.
+//!
 //! The corpus is deliberately dependency-free: it is scanned with a small
 //! line-oriented reader rather than a JSON crate, so conformance adds no
 //! third-party code to a contract crate.
@@ -35,6 +42,11 @@ const CORPUS: &str = include_str!("../../../../zk/vectors/verifier_conformance_v
 #[cfg(test)]
 const CORPUS_V2: &str = include_str!("../../../../zk/vectors/verifier_conformance_v2.json");
 
+/// Companion malformed public-input hex corpus (`#353`, `#809`).
+#[cfg(test)]
+const MALFORMED_CORPUS: &str =
+    include_str!("../../../../zk/vectors/malformed_public_inputs_v1.json");
+
 #[cfg(test)]
 #[derive(Debug)]
 struct ConformanceCase {
@@ -44,6 +56,17 @@ struct ConformanceCase {
     proof_hex: String,
     accept: bool,
     reject_code: Option<String>,
+}
+
+/// One case from the malformed public-input hex corpus. `value` is the raw
+/// wire *presentation*; it is never valid hex, so it never decodes to bytes.
+#[cfg(test)]
+#[derive(Debug)]
+struct MalformedCase {
+    id: String,
+    field: String,
+    value: String,
+    reject_code: String,
 }
 
 /// Extract the value of `"<key>": <value>` from a single corpus line.
@@ -116,6 +139,41 @@ fn parse_corpus_from(source: &str) -> Vec<ConformanceCase> {
     cases
 }
 
+/// Line-oriented reader for the malformed-hex corpus. Cases end at
+/// `reject_code` (inside `expect`), matching the generator's key order; any
+/// structural drift surfaces as a short corpus, which the integrity test
+/// rejects against the raw `"id"` count.
+#[cfg(test)]
+fn parse_malformed_corpus() -> Vec<MalformedCase> {
+    let mut cases = Vec::new();
+    let mut current: Option<(String, String, String)> = None;
+
+    for line in MALFORMED_CORPUS.lines() {
+        if let Some(id) = field_value(line, "id") {
+            current = Some((id, String::new(), String::new()));
+            continue;
+        }
+        let Some(state) = current.as_mut() else {
+            continue;
+        };
+        if let Some(field) = field_value(line, "field") {
+            state.1 = field;
+        } else if let Some(value) = field_value(line, "value") {
+            state.2 = value;
+        } else if let Some(reject_code) = field_value(line, "reject_code") {
+            let (id, field, value) = current.take().unwrap();
+            cases.push(MalformedCase {
+                id,
+                field,
+                value,
+                reject_code,
+            });
+        }
+    }
+
+    cases
+}
+
 #[cfg(test)]
 fn decode_hex(value: &str) -> Vec<u8> {
     assert!(value.len() % 2 == 0, "corpus hex must be even length");
@@ -127,6 +185,25 @@ fn decode_hex(value: &str) -> Vec<u8> {
         out.push((high * 16 + low) as u8);
     }
     out
+}
+
+/// Strict hex decoder for the malformed-hex boundary: odd length or any
+/// byte outside the ASCII `0-9a-fA-F` alphabet fails. `None` is the
+/// `malformed_hex` category — the same contract the Python `decode_hex` and
+/// the TypeScript `decodeHex` enforce before framing checks run.
+#[cfg(test)]
+fn try_decode_hex(value: &str) -> Option<Vec<u8>> {
+    if value.len() % 2 != 0 {
+        return None;
+    }
+    let raw = value.as_bytes();
+    let mut out = Vec::with_capacity(value.len() / 2);
+    for chunk in raw.chunks(2) {
+        let high = (chunk[0] as char).to_digit(16)?;
+        let low = (chunk[1] as char).to_digit(16)?;
+        out.push((high * 16 + low) as u8);
+    }
+    Some(out)
 }
 
 #[cfg(test)]
@@ -251,6 +328,95 @@ fn corpus_constants_match_contract_constants() {
 }
 
 // ---------------------------------------------------------------------------
+// Companion malformed public-input hex corpus (#353, #809)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn malformed_corpus_is_versioned_and_rejects_only_malformed_hex() {
+    assert!(
+        MALFORMED_CORPUS.contains("\"format\": \"harpocrates.malformed-public-inputs\""),
+        "malformed corpus format drifted from the other layers"
+    );
+    assert!(
+        MALFORMED_CORPUS.contains("\"version\": 1"),
+        "malformed corpus version drifted; bump the runners alongside the format"
+    );
+    assert!(
+        MALFORMED_CORPUS.contains("\"codec\": \"hpx-vi/1\""),
+        "malformed corpus codec id drifted from the contract implementation"
+    );
+
+    let cases = parse_malformed_corpus();
+    // Every case must be accounted for: a dropped `reject_code` line (or any
+    // other structural drift) would otherwise silently shrink the corpus and
+    // stop asserting cases the other layers still exercise.
+    assert_eq!(
+        cases.len(),
+        MALFORMED_CORPUS.matches("\"id\":").count(),
+        "malformed corpus parser dropped cases; structural drift in the generator"
+    );
+    assert!(
+        cases.len() >= 10,
+        "expected a substantive malformed corpus, parsed {} cases",
+        cases.len()
+    );
+
+    let mut ids: Vec<&str> = cases.iter().map(|case| case.id.as_str()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(
+        ids.len(),
+        cases.len(),
+        "malformed corpus case ids must be unique"
+    );
+
+    for case in &cases {
+        assert_eq!(
+            case.field, "public_inputs",
+            "{}: this runner classifies public inputs only",
+            case.id
+        );
+        assert_eq!(
+            case.reject_code, "malformed_hex",
+            "{}: the companion corpus must only carry malformed_hex cases",
+            case.id
+        );
+    }
+}
+
+#[test]
+fn strict_hex_boundary_rejects_every_malformed_case_with_its_expected_category() {
+    let mut mismatches: Vec<String> = vec![];
+
+    for case in parse_malformed_corpus() {
+        let expected = RejectCode::from_wire(&case.reject_code)
+            .unwrap_or_else(|| panic!("{}: unknown reject code {}", case.id, case.reject_code));
+        let actual = match try_decode_hex(&case.value) {
+            Some(_) => panic!(
+                "{}: corpus value is well-formed hex; the malformed corpus must only carry rejections",
+                case.id
+            ),
+            None => RejectCode::MalformedHex,
+        };
+        if actual != expected {
+            mismatches.push(format!(
+                "{}: expected code {} ({}), got {}",
+                case.id,
+                expected.as_code(),
+                case.reject_code,
+                actual.as_code()
+            ));
+        }
+    }
+
+    assert!(
+        mismatches.is_empty(),
+        "malformed hex mismatches: {:?}",
+        mismatches
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Boundary 1: the pure codec
 // ---------------------------------------------------------------------------
 
@@ -348,6 +514,70 @@ fn assert_on_chain_agrees(
     assert!(
         mismatches.is_empty(),
         "on-chain mismatches: {:?}",
+        mismatches
+    );
+}
+
+/// `malformed_hex` is layer-local — hex decoding only happens where material
+/// arrives as a string — but that locality is only safe if no byte-level
+/// interpretation of a malformed presentation can be accepted on chain. Each
+/// case's raw presentation bytes are therefore pushed through
+/// `classify_public_inputs` for every schema: the entry point must reject
+/// them, and must agree with the pure codec about the rejection (#809).
+#[test]
+fn on_chain_classifier_never_accepts_a_malformed_presentation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    client.init(&Address::generate(&env));
+
+    let schemas = [
+        (
+            verifier_inputs::SCHEMA_SILENT_WITNESS,
+            SCHEMA_ID_SILENT_WITNESS,
+        ),
+        (
+            verifier_inputs::SCHEMA_SILENT_WITNESS_V2,
+            SCHEMA_ID_SILENT_WITNESS_V2,
+        ),
+        (
+            verifier_inputs::SCHEMA_REVOCATION_WITNESS,
+            SCHEMA_ID_REVOCATION_WITNESS,
+        ),
+    ];
+
+    let mut mismatches: Vec<String> = vec![];
+
+    for case in parse_malformed_corpus() {
+        let presentation = Bytes::from_slice(&env, case.value.as_bytes());
+        // A proof length inside the accepted window, so the frame is the only
+        // thing that can cause a rejection.
+        let proof_len: u32 = 128;
+
+        for (schema, schema_id) in schemas {
+            let pure = match verifier_inputs::classify(
+                schema,
+                case.value.as_bytes(),
+                proof_len,
+                expected_domain_for(schema),
+            ) {
+                Ok(()) => verifier_inputs::ACCEPTED_CODE,
+                Err(code) => code.as_code(),
+            };
+            let actual = client.classify_public_inputs(&schema_id, &presentation, &proof_len);
+            if actual == verifier_inputs::ACCEPTED_CODE || actual != pure {
+                mismatches.push(format!(
+                    "{} ({}): expected a rejection matching the pure codec (code {}), got {}",
+                    case.id, schema, pure, actual
+                ));
+            }
+        }
+    }
+
+    assert!(
+        mismatches.is_empty(),
+        "on-chain malformed-presentation mismatches: {:?}",
         mismatches
     );
 }

@@ -6,6 +6,7 @@
 //!   - Disputed / superseded / valid / revoked / expired are distinct statuses
 //!   - Resolution never deletes the original proof record
 //!   - Open-dispute cap (MAX_OPEN_DISPUTES_PER_PROOF)
+//!   - Per-reporter open-dispute cap (MAX_OPEN_DISPUTES_PER_REPORTER)
 //!   - Reporter cooldown
 
 #![cfg(test)]
@@ -729,4 +730,201 @@ fn get_dispute_unknown_id_is_none() {
     let (env, cid, _admin, _source, _issuer, _spid, _) = make_env();
     let client = HarpocratesRegistryClient::new(&env, &cid);
     assert!(client.get_dispute(&b32(&env, 0xFE)).is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Per-reporter open-dispute cap (MAX_OPEN_DISPUTES_PER_REPORTER)
+// ---------------------------------------------------------------------------
+
+/// Register `n` additional source proofs with unique ids / hashes so a single
+/// reporter can dispute distinct proofs without touching the per-proof cap.
+fn register_extra_proofs(
+    env: &Env,
+    client: &HarpocratesRegistryClient,
+    source: &Address,
+    n: u32,
+) -> std::vec::Vec<BytesN<32>> {
+    let mut ids = std::vec::Vec::new();
+    for i in 0..n {
+        let tag = (0x40 + i) as u8;
+        let pid = b32u(env, 3, tag);
+        client.register_source(source, &b32u(env, 4, tag), &b32u(env, 5, tag), &pid);
+        ids.push(pid);
+    }
+    ids
+}
+
+/// Open a dispute by `reporter` on `proof_id`, using `tag` to derive a fresh
+/// dispute id, reporter_hash, and commitment.
+fn open_tagged(
+    env: &Env,
+    client: &HarpocratesRegistryClient,
+    reporter: &Address,
+    proof_id: &BytesN<32>,
+    tag: u8,
+) -> BytesN<32> {
+    let dispute_id = b32u(env, 6, tag);
+    client.open_dispute(
+        reporter,
+        &b32u(env, 7, tag),
+        &dispute_id,
+        proof_id,
+        &DisputeReason::Other,
+        &b32u(env, 8, tag),
+    );
+    dispute_id
+}
+
+fn reporter_saturated_err() -> Result<soroban_sdk::Error, soroban_sdk::InvokeError> {
+    Ok(soroban_sdk::Error::from_contract_error(
+        RegistryError::ReporterDisputesSaturated as u32,
+    ))
+}
+
+#[test]
+fn reporter_cap_reached_then_dismiss_releases_slot_and_reopen_succeeds() {
+    let (env, cid, admin, source, _issuer, _spid, _) = make_env();
+    let client = HarpocratesRegistryClient::new(&env, &cid);
+    let reporter = Address::generate(&env);
+
+    let proofs = register_extra_proofs(&env, &client, &source, MAX_OPEN_DISPUTES_PER_REPORTER + 1);
+
+    let mut disputes = std::vec::Vec::new();
+    for i in 0..MAX_OPEN_DISPUTES_PER_REPORTER {
+        disputes.push(open_tagged(&env, &client, &reporter, &proofs[i as usize], i as u8));
+    }
+    assert_eq!(
+        client.get_reporter_open_dispute_count(&reporter),
+        MAX_OPEN_DISPUTES_PER_REPORTER
+    );
+
+    // One more dispute on a fresh proof is rejected by the reporter cap.
+    let extra = &proofs[MAX_OPEN_DISPUTES_PER_REPORTER as usize];
+    let res = client.try_open_dispute(
+        &reporter,
+        &b32u(&env, 7, 0x60),
+        &b32u(&env, 6, 0x60),
+        extra,
+        &DisputeReason::Other,
+        &b32u(&env, 8, 0x60),
+    );
+    assert_eq!(res, Err(reporter_saturated_err()));
+    // Rejection is atomic: no counters moved.
+    assert_eq!(client.get_open_dispute_count(extra), 0);
+    assert!(client.get_dispute(&b32u(&env, 6, 0x60)).is_none());
+
+    // A different reporter is unaffected.
+    let other = Address::generate(&env);
+    open_tagged(&env, &client, &other, extra, 0x61);
+    assert_eq!(client.get_reporter_open_dispute_count(&other), 1);
+
+    // Dismissing one dispute releases a slot.
+    client.dismiss_dispute(&admin, &disputes[0]);
+    assert_eq!(
+        client.get_reporter_open_dispute_count(&reporter),
+        MAX_OPEN_DISPUTES_PER_REPORTER - 1
+    );
+
+    // Reopen succeeds and the cap is reached again.
+    open_tagged(&env, &client, &reporter, extra, 0x62);
+    assert_eq!(
+        client.get_reporter_open_dispute_count(&reporter),
+        MAX_OPEN_DISPUTES_PER_REPORTER
+    );
+}
+
+#[test]
+fn reporter_cap_released_on_resolve_and_supersede() {
+    let (env, cid, admin, source, _issuer, _spid, sealid) = make_env();
+    let client = HarpocratesRegistryClient::new(&env, &cid);
+    let reporter = Address::generate(&env);
+
+    let proofs = register_extra_proofs(&env, &client, &source, MAX_OPEN_DISPUTES_PER_REPORTER + 2);
+
+    let mut disputes = std::vec::Vec::new();
+    for i in 0..MAX_OPEN_DISPUTES_PER_REPORTER {
+        disputes.push(open_tagged(&env, &client, &reporter, &proofs[i as usize], i as u8));
+    }
+
+    // Resolve path: respond then resolve.
+    client.respond_dispute(&source, &disputes[0], &b32(&env, 0x91));
+    // A responded (still open) dispute keeps holding its slot.
+    assert_eq!(
+        client.get_reporter_open_dispute_count(&reporter),
+        MAX_OPEN_DISPUTES_PER_REPORTER
+    );
+    client.resolve_dispute(&admin, &disputes[0]);
+    assert_eq!(
+        client.get_reporter_open_dispute_count(&reporter),
+        MAX_OPEN_DISPUTES_PER_REPORTER - 1
+    );
+
+    let p_a = &proofs[MAX_OPEN_DISPUTES_PER_REPORTER as usize];
+    open_tagged(&env, &client, &reporter, p_a, 0x70);
+    assert_eq!(
+        client.try_open_dispute(
+            &reporter,
+            &b32u(&env, 7, 0x71),
+            &b32u(&env, 6, 0x71),
+            &proofs[MAX_OPEN_DISPUTES_PER_REPORTER as usize + 1],
+            &DisputeReason::Other,
+            &b32u(&env, 8, 0x71),
+        ),
+        Err(reporter_saturated_err())
+    );
+
+    // Supersede path releases a slot too.
+    client.supersede_dispute(&admin, &disputes[1], &sealid);
+    assert_eq!(
+        client.get_reporter_open_dispute_count(&reporter),
+        MAX_OPEN_DISPUTES_PER_REPORTER - 1
+    );
+    open_tagged(
+        &env,
+        &client,
+        &reporter,
+        &proofs[MAX_OPEN_DISPUTES_PER_REPORTER as usize + 1],
+        0x72,
+    );
+    assert_eq!(
+        client.get_reporter_open_dispute_count(&reporter),
+        MAX_OPEN_DISPUTES_PER_REPORTER
+    );
+
+    // Retrying a terminal transition must not double-release the slot.
+    assert!(client.try_dismiss_dispute(&admin, &disputes[0]).is_err());
+    assert_eq!(
+        client.get_reporter_open_dispute_count(&reporter),
+        MAX_OPEN_DISPUTES_PER_REPORTER
+    );
+}
+
+#[test]
+fn reporter_cap_does_not_change_per_proof_cap() {
+    let (env, cid, _admin, _source, _issuer, spid, _) = make_env();
+    let client = HarpocratesRegistryClient::new(&env, &cid);
+
+    // Distinct reporters each open one dispute on the same proof: the
+    // per-proof cap still trips at MAX_OPEN_DISPUTES_PER_PROOF.
+    for i in 0..MAX_OPEN_DISPUTES_PER_PROOF {
+        let r = Address::generate(&env);
+        open_tagged(&env, &client, &r, &spid, (0x80 + i) as u8);
+        assert_eq!(client.get_reporter_open_dispute_count(&r), 1);
+    }
+    let r = Address::generate(&env);
+    let res = client.try_open_dispute(
+        &r,
+        &b32u(&env, 7, 0x8F),
+        &b32u(&env, 6, 0x8F),
+        &spid,
+        &DisputeReason::Other,
+        &b32u(&env, 8, 0x8F),
+    );
+    assert_eq!(
+        res,
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            RegistryError::TooManyOpenDisputes as u32
+        )))
+    );
+    assert_eq!(client.get_reporter_open_dispute_count(&r), 0);
 }

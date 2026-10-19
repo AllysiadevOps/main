@@ -136,6 +136,7 @@ input, a different actor, or new evidence before the call can succeed.
 | 85 | `IssuerRotationNotFound` | state | no | No issuer rotation grace record exists for the requested key. |
 | 86 | `IssuerRotationGraceStillActive` | state | yes | The issuer rotation grace window has not lapsed; retry once it has. |
 | 87 | `CircuitVersionMismatch` | unsupported | no | The scoped envelope commits a circuit version other than the expected one, or is the bare frame that commits none. |
+| 88 | `ReporterDisputesSaturated` | resource | no | The reporter reached `MAX_OPEN_DISPUTES_PER_REPORTER`. |
 
 ## Privacy Rules
 

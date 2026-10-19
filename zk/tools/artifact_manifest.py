@@ -1003,12 +1003,27 @@ def declared_circuit_names(lock: Lock) -> set[str]:
     return names
 
 
-def discover_circuit_packages(lock: Lock, root: Path) -> list[str]:
-    """Every Noir package in the tree, i.e. every directory holding a Nargo.toml.
+def _is_library_package(package_toml: Path) -> bool:
+    """Return True when a Nargo.toml declares ``type = \"lib\"``."""
+    try:
+        text = package_toml.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if re.fullmatch(r'type\s*=\s*["\']lib["\']', line):
+            return True
+    return False
 
-    A sibling directory without one (``scripts/``, ``tools/``) is not a circuit
-    and is ignored, so neither a helper script nor a stray build directory can
-    fail the gate. The walk is sorted and capped by ``limits.max_circuits``.
+
+def discover_circuit_packages(lock: Lock, root: Path) -> list[str]:
+    """Every binary Noir circuit package in the tree.
+
+    A sibling directory without ``Nargo.toml`` (``scripts/``, ``tools/``) or a
+    shared Noir library crate (``type = \"lib\"``) produces no ACIR artifact and
+    is ignored, so neither a helper script, a shared library, nor a stray build
+    directory can fail the gate. The walk is sorted and capped by
+    ``limits.max_circuits``.
     """
     base = root / lock.circuit_root
     if not base.is_dir():
@@ -1016,7 +1031,10 @@ def discover_circuit_packages(lock: Lock, root: Path) -> list[str]:
 
     names: list[str] = []
     for path in sorted(base.iterdir()):
-        if not (path.is_dir() and (path / lock.package_file).is_file()):
+        package_toml = path / lock.package_file
+        if not (path.is_dir() and package_toml.is_file()):
+            continue
+        if _is_library_package(package_toml):
             continue
         if len(names) >= lock.limits.max_circuits:
             raise BuildError(

@@ -1528,6 +1528,41 @@ code {
   line-height: 1.45;
 }
 
+.release-compatibility-banner {
+  justify-content: space-between;
+  align-items: center;
+}
+
+.release-compatibility-banner__content {
+  flex: 1;
+}
+
+.release-compatibility-banner__content code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  font-family: var(--mono);
+  font-size: 0.8em;
+}
+
+.release-compatibility-banner__dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.8;
+  transition: opacity 150ms ease;
+}
+
+.release-compatibility-banner__dismiss:hover {
+  opacity: 1;
+}
+
 /* ── Verification mode toggle (offline local check) ─────────────────────── */
 .verify-mode {
   display: flex;

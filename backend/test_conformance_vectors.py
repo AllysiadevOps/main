@@ -15,8 +15,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 
 import pytest
+
+VECTORS_DIR = Path(__file__).resolve().parents[1] / "zk" / "vectors"
+if str(VECTORS_DIR) not in sys.path:
+    sys.path.insert(0, str(VECTORS_DIR))
+
+import generate_malformed_public_inputs  # noqa: E402
+import generate_vectors  # noqa: E402
 
 from verifier_inputs import (
     BN254_SCALAR_FIELD_MODULUS,
@@ -275,3 +283,116 @@ def test_error_signal_never_carries_input_material():
     assert tampered not in rendered
     assert "ff" * 8 not in rendered
     assert set(signal) <= {"codec", "reject_code", "field"}
+
+
+# ── Generator --check and write mode ────────────────────────────────────────
+
+
+def test_generators_check_passes_on_committed_vectors():
+    assert generate_vectors.main(["--check"]) == 0
+    assert generate_malformed_public_inputs.main(["--check"]) == 0
+
+
+def test_generate_vectors_check_fails_on_tampered_temp_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    temp_v1 = tmp_path / "verifier_conformance_v1.json"
+    temp_v2 = tmp_path / "verifier_conformance_v2.json"
+    tampered_v1_text = CORPUS_PATH.read_text(encoding="utf-8").replace(
+        '"sw-pos-001-canonical"', '"sw-pos-001-tampered"', 1
+    )
+    temp_v1.write_text(tampered_v1_text, encoding="utf-8")
+    temp_v2.write_text(CORPUS_V2_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+
+    monkeypatch.setattr(generate_vectors, "OUT_PATH", temp_v1)
+    monkeypatch.setattr(generate_vectors, "OUT_PATH_V2", temp_v2)
+
+    with pytest.raises(SystemExit) as excinfo:
+        generate_vectors.main(["--check"])
+
+    assert excinfo.value.code == 1
+    assert temp_v1.read_text(encoding="utf-8") == tampered_v1_text
+    captured = capsys.readouterr()
+    output = captured.err + captured.out
+    assert "out of date" in output
+    assert "--- verifier_conformance_v1.json (committed)" in output
+    assert "+++ verifier_conformance_v1.json (generated)" in output
+    assert '-      "id": "sw-pos-001-tampered",' in output
+    assert '+      "id": "sw-pos-001-canonical",' in output
+
+
+def test_generate_vectors_check_fails_on_tampered_v2_temp_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    temp_v1 = tmp_path / "verifier_conformance_v1.json"
+    temp_v2 = tmp_path / "verifier_conformance_v2.json"
+    tampered_v2_text = CORPUS_V2_PATH.read_text(encoding="utf-8").replace(
+        '"sw2-pos-001-canonical"', '"sw2-pos-001-tampered"', 1
+    )
+    temp_v1.write_text(CORPUS_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    temp_v2.write_text(tampered_v2_text, encoding="utf-8")
+
+    monkeypatch.setattr(generate_vectors, "OUT_PATH", temp_v1)
+    monkeypatch.setattr(generate_vectors, "OUT_PATH_V2", temp_v2)
+
+    with pytest.raises(SystemExit) as excinfo:
+        generate_vectors.main(["--check"])
+
+    assert excinfo.value.code == 1
+    assert temp_v2.read_text(encoding="utf-8") == tampered_v2_text
+    captured = capsys.readouterr()
+    output = captured.err + captured.out
+    assert "out of date" in output
+    assert "--- verifier_conformance_v2.json (committed)" in output
+    assert "+++ verifier_conformance_v2.json (generated)" in output
+    assert '-      "id": "sw2-pos-001-tampered",' in output
+    assert '+      "id": "sw2-pos-001-canonical",' in output
+
+
+def test_generate_malformed_public_inputs_check_fails_on_tampered_temp_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    temp_malformed = tmp_path / "malformed_public_inputs_v1.json"
+    tampered_text = MALFORMED_PATH.read_text(encoding="utf-8").replace(
+        '"mh-neg-001-single-nibble"', '"mh-neg-001-tampered"', 1
+    )
+    temp_malformed.write_text(tampered_text, encoding="utf-8")
+
+    monkeypatch.setattr(generate_malformed_public_inputs, "OUT_PATH", temp_malformed)
+
+    with pytest.raises(SystemExit) as excinfo:
+        generate_malformed_public_inputs.main(["--check"])
+
+    assert excinfo.value.code == 1
+    assert temp_malformed.read_text(encoding="utf-8") == tampered_text
+    captured = capsys.readouterr()
+    output = captured.err + captured.out
+    assert "out of date" in output
+    assert "--- malformed_public_inputs_v1.json (committed)" in output
+    assert "+++ malformed_public_inputs_v1.json (generated)" in output
+    assert '-      "id": "mh-neg-001-tampered",' in output
+    assert '+      "id": "mh-neg-001-single-nibble",' in output
+
+
+def test_generators_write_mode_output_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    temp_v1 = tmp_path / "verifier_conformance_v1.json"
+    temp_v2 = tmp_path / "verifier_conformance_v2.json"
+    temp_malformed = tmp_path / "malformed_public_inputs_v1.json"
+
+    monkeypatch.setattr(generate_vectors, "OUT_PATH", temp_v1)
+    monkeypatch.setattr(generate_vectors, "OUT_PATH_V2", temp_v2)
+    monkeypatch.setattr(generate_malformed_public_inputs, "OUT_PATH", temp_malformed)
+
+    assert generate_vectors.main([]) == 0
+    assert generate_malformed_public_inputs.main([]) == 0
+
+    assert temp_v1.read_text(encoding="utf-8") == CORPUS_PATH.read_text(encoding="utf-8")
+    assert temp_v2.read_text(encoding="utf-8") == CORPUS_V2_PATH.read_text(encoding="utf-8")
+    assert temp_malformed.read_text(encoding="utf-8") == MALFORMED_PATH.read_text(
+        encoding="utf-8"
+    )
+    assert generate_vectors.main(["--check"]) == 0
+    assert generate_malformed_public_inputs.main(["--check"]) == 0
+

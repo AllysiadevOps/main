@@ -1638,5 +1638,247 @@ class SchemaETagCachingTest(unittest.TestCase):
         self.assertEqual(second.status_code, 304)
 
 
+class JobDownloadRangeAndETagTest(unittest.TestCase):
+    """ETag, conditional requests, and single-Range support for /api/jobs/<id>/download."""
+
+    def setUp(self):
+        import db
+        db._JOBS.clear()
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        patcher = patch.dict(os.environ, {"HARPOCRATES_STORAGE_DIR": self.temp_dir.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_full_download_returns_200_and_etag(self):
+        import db
+        from storage import get_job_output_path
+
+        job_id = 101
+        content = b"Harpocrates video payload data for test"
+        out_path = get_job_output_path(job_id)
+        out_path.write_bytes(content)
+        content_hash = hashlib.sha256(content).hexdigest()
+
+        db._JOBS[job_id] = {
+            "id": job_id,
+            "type": "embed",
+            "status": "completed",
+            "result": {
+                "source_hash": "source123",
+                "embedded_hash": content_hash,
+                "metadata_hash": "meta123",
+                "db_event": 42,
+            },
+        }
+
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            response = client.get(f"/api/jobs/{job_id}/download")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, content)
+        self.assertEqual(response.headers.get("Accept-Ranges"), "bytes")
+        etag = response.headers.get("ETag")
+        self.assertTrue(etag)
+        self.assertIn(content_hash, etag)
+        self.assertEqual(response.headers.get("X-Harpocrates-Source-Hash"), "source123")
+        self.assertEqual(response.headers.get("X-Harpocrates-Embedded-Hash"), content_hash)
+        self.assertEqual(response.headers.get("X-Harpocrates-Metadata-Hash"), "meta123")
+        self.assertEqual(response.headers.get("X-Harpocrates-Db-Event"), "42")
+
+    def test_conditional_if_none_match_returns_304(self):
+        import db
+        from storage import get_job_output_path
+
+        job_id = 102
+        content = b"Conditional download test content"
+        out_path = get_job_output_path(job_id)
+        out_path.write_bytes(content)
+        content_hash = hashlib.sha256(content).hexdigest()
+
+        db._JOBS[job_id] = {
+            "id": job_id,
+            "type": "embed",
+            "status": "completed",
+            "result": {"embedded_hash": content_hash},
+        }
+
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            first = client.get(f"/api/jobs/{job_id}/download")
+            etag = first.headers.get("ETag")
+            self.assertTrue(etag)
+
+            # Matching strong ETag in If-None-Match
+            second = client.get(
+                f"/api/jobs/{job_id}/download",
+                headers={"If-None-Match": etag},
+            )
+            self.assertEqual(second.status_code, 304)
+            self.assertEqual(second.data, b"")
+
+            # Non-matching ETag returns 200 full content
+            third = client.get(
+                f"/api/jobs/{job_id}/download",
+                headers={"If-None-Match": '"different-hash"'},
+            )
+            self.assertEqual(third.status_code, 200)
+            self.assertEqual(third.data, content)
+
+    def test_range_request_returns_206_partial_content(self):
+        import db
+        from storage import get_job_output_path
+
+        job_id = 103
+        content = b"0123456789abcdefghijklmnopqrstuvwxyz"
+        out_path = get_job_output_path(job_id)
+        out_path.write_bytes(content)
+        content_hash = hashlib.sha256(content).hexdigest()
+
+        db._JOBS[job_id] = {
+            "id": job_id,
+            "type": "embed",
+            "status": "completed",
+            "result": {"embedded_hash": content_hash},
+        }
+
+        total_length = len(content)
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            # Range: bytes=0-9 (first 10 bytes)
+            resp = client.get(
+                f"/api/jobs/{job_id}/download",
+                headers={"Range": "bytes=0-9"},
+            )
+            self.assertEqual(resp.status_code, 206)
+            self.assertEqual(resp.data, content[0:10])
+            self.assertEqual(
+                resp.headers.get("Content-Range"),
+                f"bytes 0-9/{total_length}",
+            )
+            self.assertEqual(resp.headers.get("Content-Length"), "10")
+
+            # Range: bytes=10-19
+            resp_mid = client.get(
+                f"/api/jobs/{job_id}/download",
+                headers={"Range": "bytes=10-19"},
+            )
+            self.assertEqual(resp_mid.status_code, 206)
+            self.assertEqual(resp_mid.data, content[10:20])
+            self.assertEqual(
+                resp_mid.headers.get("Content-Range"),
+                f"bytes 10-19/{total_length}",
+            )
+
+            # Suffix range: bytes=-5 (last 5 bytes)
+            resp_suffix = client.get(
+                f"/api/jobs/{job_id}/download",
+                headers={"Range": "bytes=-5"},
+            )
+            self.assertEqual(resp_suffix.status_code, 206)
+            self.assertEqual(resp_suffix.data, content[-5:])
+            self.assertEqual(
+                resp_suffix.headers.get("Content-Range"),
+                f"bytes {total_length - 5}-{total_length - 1}/{total_length}",
+            )
+
+            # Offset range: bytes=20- (from byte 20 to end)
+            resp_offset = client.get(
+                f"/api/jobs/{job_id}/download",
+                headers={"Range": "bytes=20-"},
+            )
+            self.assertEqual(resp_offset.status_code, 206)
+            self.assertEqual(resp_offset.data, content[20:])
+            self.assertEqual(
+                resp_offset.headers.get("Content-Range"),
+                f"bytes 20-{total_length - 1}/{total_length}",
+            )
+
+    def test_invalid_range_returns_416(self):
+        import db
+        from storage import get_job_output_path
+
+        job_id = 104
+        content = b"Short content"
+        out_path = get_job_output_path(job_id)
+        out_path.write_bytes(content)
+        content_hash = hashlib.sha256(content).hexdigest()
+
+        db._JOBS[job_id] = {
+            "id": job_id,
+            "type": "embed",
+            "status": "completed",
+            "result": {"embedded_hash": content_hash},
+        }
+
+        total_length = len(content)
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            resp = client.get(
+                f"/api/jobs/{job_id}/download",
+                headers={"Range": f"bytes=100-200"},
+            )
+            self.assertEqual(resp.status_code, 416)
+            self.assertEqual(
+                resp.headers.get("Content-Range"),
+                f"bytes */{total_length}",
+            )
+
+    def test_unauthorized_or_unfinished_job_errors(self):
+        import db
+        from storage import get_job_output_path
+
+        with _app_env({"NOIR_WORKER_ENABLED": "false", "DATABASE_URL": ""}) as client:
+            # 1. Non-existent job -> 404
+            resp = client.get("/api/jobs/9999/download")
+            self.assertEqual(resp.status_code, 404)
+            self.assertEqual(resp.get_json(), {"error": "Job not found"})
+
+            # 2. Non-embed job type -> 400
+            db._JOBS[201] = {
+                "id": 201,
+                "type": "extract",
+                "status": "completed",
+                "result": {},
+            }
+            resp = client.get("/api/jobs/201/download")
+            self.assertEqual(resp.status_code, 400)
+            self.assertEqual(resp.get_json(), {"error": "No output available for download"})
+
+            # 3. Pending job -> 400
+            db._JOBS[202] = {
+                "id": 202,
+                "type": "embed",
+                "status": "pending",
+                "result": None,
+            }
+            resp = client.get("/api/jobs/202/download")
+            self.assertEqual(resp.status_code, 400)
+            self.assertEqual(resp.get_json(), {"error": "No output available for download"})
+
+            # 4. Failed job -> 400
+            db._JOBS[203] = {
+                "id": 203,
+                "type": "embed",
+                "status": "failed",
+                "result": None,
+            }
+            resp = client.get("/api/jobs/203/download")
+            self.assertEqual(resp.status_code, 400)
+            self.assertEqual(resp.get_json(), {"error": "No output available for download"})
+
+            # 5. Completed job but output file missing -> 404
+            db._JOBS[204] = {
+                "id": 204,
+                "type": "embed",
+                "status": "completed",
+                "result": {},
+            }
+            missing_out = get_job_output_path(204)
+            if missing_out.exists():
+                missing_out.unlink()
+            resp = client.get("/api/jobs/204/download")
+            self.assertEqual(resp.status_code, 404)
+            self.assertEqual(resp.get_json(), {"error": "Output file missing"})
+
+
 if __name__ == "__main__":
     unittest.main()
+

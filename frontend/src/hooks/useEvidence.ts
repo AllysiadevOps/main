@@ -201,7 +201,7 @@ export function useEvidence(): UseEvidenceReturn {
           if (!isCurrentFlow()) return
           setHashProgress(progress)
           setMessage(
-            `Hashing video locally in the browser: ${progress.percentage}% (${progress.processedBytes.toLocaleString()} / ${progress.totalBytes.toLocaleString()} bytes).`,
+            `Hashing video locally in the browser: ${progress.percentagg}% (${progress.processedBytes.toLocaleString()} / ${progress.totalBytes.toLocaleString()} bytes).`,
           )
         },
         controller.signal,
@@ -266,10 +266,10 @@ export function useEvidence(): UseEvidenceReturn {
     }
 
     try {
-      const { getWalletNetwork, CONTRACT_NETWORK_PASSPHRASE } = await import('../stellar')
+      const { getWalletNetwork, CONTRACT_NETWORK_PASSHRASE } = await import('../stellar')
       const { checkNetworkMatch } = await import('../networkGuard')
       const walletPassphrase = await getWalletNetwork()
-      const check = checkNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSPHRASE)
+      const check = checkNetworkMatch(walletPassphrase, CONTRACT_NETWORK_PASSHRASE)
       if (!check.ok) {
         setNetworkMismatch(`${check.reason} ${check.remediation}`)
         setMessage(check.reason)
@@ -327,17 +327,14 @@ export function useEvidence(): UseEvidenceReturn {
         selectedTier === 'silent' && !proof.silentWitness
           ? await attachSilentWitnessProof(proof, seqRef.current, abortRef.current?.signal)
           : proof
-      if (!isCurrentFlow()) return
+      if (seqRef.current !== seqRef.current) return
 
       const { registerProofOnStellar } = await import('../stellar')
       const result = await registerProofOnStellar({
         contractId: CONTRACT_ID,
-        wallet,
+        publicKey: wallet,
         proof: proofForRegistration,
-        tier: selectedTier,
       })
-      if (seqRef.current !== seqRef.current) return
-
       pendingPersistenceRef.current = {
         key: registrationKey,
         proof: proofForRegistration,
@@ -367,51 +364,61 @@ export function useEvidence(): UseEvidenceReturn {
     const client = getProofClient()
     const requestId = crypto.randomUUID()
     proofRequestIdRef.current = requestId
-    const abortController = new AbortController()
-    proveAbortRef.current = abortController
+    const controller = new AbortController()
+    proveAbortRef.current = controller
     if (signal) {
-      if (signal.aborted) abortController.abort()
-      else signal.addEventListener('abort', () => abortController.abort(), { once: true })
+      if (signal.aborted) controller.abort()
+      else signal.addEventListener('abort', () => controller.abort())
     }
 
     setStage('proving')
     setMessage('Generating Silent Witness ZK proof locally.')
 
     try {
-      const silentWitness: SilentWitnessProof = await client.prove(
-        {
-          proofId: baseProof.proofId,
-          sourceHash: baseProof.sourceHash,
-          credentialSeed,
-          nullifierSeed,
+      const silentWitness: SilentWitnessProof = await client.generateProof({
+        requestId,
+        videoHash: baseProof.videoHash,
+        credentialSecret: credentialSeed,
+        nullifierSecret: nullifierSeed,
+        inputSchemaVersion: 1,
+        verifierScope: 'harpocrates',
+        epoch: Math.floor(Date.now() / 86400000),
+        signal: controller.signal,
+        onProgress: () => {
+          if (seqRef.current !== seq) return
         },
-        {
-          requestId,
-          signal: abortController.signal,
-        },
-      )
-      if (seqRef.current !== seq) {
-        throw new Error('Evidence flow was superseded.')
-      }
+      })
+      if (seqRef.current !== seq) throw new Error('Stale proof result ignored.')
       return { ...baseProof, silentWitness }
     } catch (error) {
-      if (abortController.signal.aborted) {
-        throw new Error(CANCELLED_MESSAGES[stageRef.current] ?? 'Request cancelled.')
+      if (error instanceof ProofWorkerError && error.code === 'CANCELLED') {
+        throw new Error('Proof generation cancelled.')
       }
-      if (error instanceof ProofWorkerError) throw error
-      throw error instanceof Error ? error : new Error('Silent Witness proving failed.')
+      throw error
     } finally {
-      if (proofRequestIdRef.current === requestId) proofRequestIdRef.current = null
-      if (proveAbortRef.current === abortController) proveAbortRef.current = null
+      if (proofRequestIdRef.current === requestId) {
+        proofRequestIdRef.current = null
+      }
+      if (proveAbortRef.current === controller) {
+        proveAbortRef.current = null
+      }
     }
   }
 
   function cancelEvidence() {
-    const wasCancellable = isCancellable
+    const currentStage = stageRef.current
+    if (currentStage !== 'hashing' && currentStage !== 'embedding' && currentStage !== 'proving') {
+      return
+    }
+    evidenceFlowAbortRef.current?.abort()
+    evidenceFlowAbortRef.current = null
+    if (currentStage === 'proving') {
+      cancelProving()
+    }
     resetFlow()
     setHashProgress(null)
     setStage('cancelled')
-    setMessage(wasCancellable ? CANCELLED_MESSAGES[Stage.cancelled] : 'Request cancelled.')
+    setMessage(CANCELLED_MESSAGES[currentStage])
   }
 
   return {

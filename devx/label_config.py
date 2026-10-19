@@ -44,6 +44,15 @@ except ImportError:  # pragma: no cover
     print("pyyaml is required: pip install pyyaml", file=sys.stderr)
     sys.exit(1)
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from devx._io import (
+    find_sensitive_match as _io_find_sensitive_match,
+    read_text_bounded as _io_read_text_bounded,
+)
+
 # ── constants ─────────────────────────────────────────────────────────────────
 
 MAX_FILE_BYTES = 64 * 1024          # 64 KiB — labels files are never large
@@ -85,9 +94,14 @@ def _load_yaml(path: Path) -> Any:
             f"{path}: file is {size} bytes, exceeds {MAX_FILE_BYTES} limit"
         )
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
+        text = _io_read_text_bounded(
+            path,
+            limit=MAX_FILE_BYTES,
+            display_name=str(path),
+        )
+    except (OSError, ValueError) as exc:
         raise FileNotFoundError(f"cannot read {path}: {exc}") from exc
+
     try:
         return yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -96,12 +110,13 @@ def _load_yaml(path: Path) -> Any:
 
 def _check_sensitive(text: str, location: str) -> None:
     """Fail if text contains any sensitive pattern."""
-    for pattern in SENSITIVE_PATTERNS:
-        if pattern.search(text):
-            raise LabelConfigError(
-                f"{location}: forbidden sensitive term matched by "
-                f"pattern {pattern.pattern!r}"
-            )
+    match_info = _io_find_sensitive_match(text, SENSITIVE_PATTERNS)
+    if match_info is not None:
+        pattern, _match = match_info
+        raise LabelConfigError(
+            f"{location}: forbidden sensitive term matched by "
+            f"pattern {pattern.pattern!r}"
+        )
 
 
 # ── labels.yml validation ─────────────────────────────────────────────────────

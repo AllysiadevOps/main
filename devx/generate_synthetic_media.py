@@ -22,6 +22,7 @@ MAX_FPS = 30
 MAX_SEED = (1 << 32) - 1
 MAX_OUTPUT_BYTES = 64 * 1024 * 1024
 PROCESS_TIMEOUT_SECONDS = 60
+AUDIO_MODES = ("none", "sine", "noise")
 
 
 class GeneratorError(RuntimeError):
@@ -35,6 +36,7 @@ def validate_options(
     duration: int,
     fps: int,
     seed: int,
+    audio: str = "none",
 ) -> None:
     if output.suffix.lower() != ".mp4":
         raise GeneratorError("output must use the .mp4 extension")
@@ -48,6 +50,8 @@ def validate_options(
         raise GeneratorError(f"fps must be between 1 and {MAX_FPS}")
     if seed < 0 or seed > MAX_SEED:
         raise GeneratorError(f"seed must be between 0 and {MAX_SEED}")
+    if audio not in AUDIO_MODES:
+        raise GeneratorError("audio must be one of: none, sine, noise")
 
 
 def build_command(
@@ -58,8 +62,40 @@ def build_command(
     duration: int,
     fps: int,
     seed: int,
+    audio: str = "none",
 ) -> list[str]:
+    if audio not in AUDIO_MODES:
+        raise GeneratorError("audio must be one of: none, sine, noise")
     source = f"testsrc2=size={width}x{height}:rate={fps},noise=alls=10:all_seed={seed}"
+    if audio == "none":
+        return [
+            ffmpeg,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-y",
+            "-f", "lavfi",
+            "-i", source,
+            "-t", str(duration),
+            "-map_metadata", "-1",
+            "-metadata", "creation_time=1970-01-01T00:00:00Z",
+            "-an",
+            "-c:v", "libx264",
+            "-preset", "medium",
+            "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-threads", "1",
+            "-fflags", "+bitexact",
+            "-flags:v", "+bitexact",
+            "-movflags", "+faststart",
+            str(output),
+        ]
+
+    if audio == "sine":
+        audio_source = f"sine=frequency={220 + (seed % 660)}:sample_rate=44100"
+    else:
+        audio_source = f"anoisesrc=color=white:sample_rate=44100:amplitude=0.1:seed={seed}"
+
     return [
         ffmpeg,
         "-nostdin",
@@ -68,17 +104,23 @@ def build_command(
         "-y",
         "-f", "lavfi",
         "-i", source,
+        "-f", "lavfi",
+        "-i", audio_source,
         "-t", str(duration),
         "-map_metadata", "-1",
         "-metadata", "creation_time=1970-01-01T00:00:00Z",
-        "-an",
         "-c:v", "libx264",
         "-preset", "medium",
         "-crf", "23",
         "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-b:a", "64k",
+        "-ar", "44100",
+        "-ac", "1",
         "-threads", "1",
         "-fflags", "+bitexact",
         "-flags:v", "+bitexact",
+        "-flags:a", "+bitexact",
         "-movflags", "+faststart",
         str(output),
     ]
@@ -100,10 +142,11 @@ def generate(
     duration: int = 3,
     fps: int = 30,
     seed: int = 0,
+    audio: str = "none",
     force: bool = False,
     ffmpeg: str = "ffmpeg",
 ) -> tuple[int, str]:
-    validate_options(output, width, height, duration, fps, seed)
+    validate_options(output, width, height, duration, fps, seed, audio)
     output = output.expanduser()
     if not output.parent.is_dir():
         raise GeneratorError("output directory does not exist")
@@ -120,7 +163,7 @@ def generate(
     try:
         try:
             subprocess.run(
-                build_command(ffmpeg, temporary, width, height, duration, fps, seed),
+                build_command(ffmpeg, temporary, width, height, duration, fps, seed, audio),
                 check=True,
                 capture_output=True,
                 timeout=PROCESS_TIMEOUT_SECONDS,
@@ -159,6 +202,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--duration", type=int, default=3, help="Duration in seconds (1-10)")
     parser.add_argument("--fps", type=int, default=30, help="Frame rate (1-30)")
     parser.add_argument("--seed", type=int, default=0, help="Noise seed (0-4294967295)")
+    parser.add_argument(
+        "--audio",
+        default="none",
+        help="Deterministic audio stream mode (sine, noise, none)",
+    )
     parser.add_argument("--force", action="store_true", help="Replace an existing output file")
     args = parser.parse_args(argv)
 
@@ -170,6 +218,7 @@ def main(argv: list[str] | None = None) -> int:
             duration=args.duration,
             fps=args.fps,
             seed=args.seed,
+            audio=args.audio,
             force=args.force,
         )
     except GeneratorError as exc:
@@ -179,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"synthetic_media: filesystem failure ({type(exc).__name__})", file=sys.stderr)
         return 1
 
-    print(f"generated synthetic MP4: {size} bytes sha256={digest}")
+    print(f"generated synthetic MP4: {size} bytes sha256={digest} audio={args.audio}")
     return 0
 
 

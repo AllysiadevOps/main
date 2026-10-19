@@ -454,3 +454,181 @@ fn test_reject_unknown_proposal_action() {
     }));
     assert!(result.is_err(), "unknown action should be rejected");
 }
+
+// ---------------------------------------------------------------------------
+// Pagination tests for list_timelock_proposals
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_list_timelock_proposals_empty() {
+    let (env, admin) = setup_env();
+    let client = HarpocratesRegistryClient::new(&env, &env.register(HarpocratesRegistry, ()));
+    client.init(&admin);
+
+    // No proposals yet
+    let page = client.list_timelock_proposals(&0, &10);
+    assert_eq!(page.proposals.len(), 0);
+    assert_eq!(page.next_cursor, None);
+
+    let page_cursor1 = client.list_timelock_proposals(&1, &10);
+    assert_eq!(page_cursor1.proposals.len(), 0);
+    assert_eq!(page_cursor1.next_cursor, None);
+}
+
+#[test]
+fn test_list_timelock_proposals_partial_page() {
+    let (env, admin) = setup_env();
+    let client = HarpocratesRegistryClient::new(&env, &env.register(HarpocratesRegistry, ()));
+    client.init(&admin);
+
+    let t1 = Address::generate(&env);
+    let t2 = Address::generate(&env);
+    let id1 = client.propose_timelocked_action(
+        &admin,
+        &(ProposalAction::SetVerifier as u32),
+        &t1,
+        &zero_payload(&env),
+    );
+    let id2 = client.propose_timelocked_action(
+        &admin,
+        &(ProposalAction::RevokeIssuer as u32),
+        &t2,
+        &zero_payload(&env),
+    );
+
+    assert_eq!(id1, 1);
+    assert_eq!(id2, 2);
+
+    let page = client.list_timelock_proposals(&0, &10);
+    assert_eq!(page.proposals.len(), 2);
+    assert_eq!(page.proposals.get(0).unwrap().target, t1);
+    assert_eq!(page.proposals.get(1).unwrap().target, t2);
+    assert_eq!(page.next_cursor, None);
+}
+
+#[test]
+fn test_list_timelock_proposals_multipage_and_ordered_disjoint() {
+    let (env, admin) = setup_env();
+    let client = HarpocratesRegistryClient::new(&env, &env.register(HarpocratesRegistry, ()));
+    client.init(&admin);
+
+    let mut targets = soroban_sdk::Vec::new(&env);
+    for _ in 0..5 {
+        let t = Address::generate(&env);
+        client.propose_timelocked_action(
+            &admin,
+            &(ProposalAction::SetVerifier as u32),
+            &t,
+            &zero_payload(&env),
+        );
+        targets.push_back(t);
+    }
+
+    // Page 1: limit 2
+    let page1 = client.list_timelock_proposals(&0, &2);
+    assert_eq!(page1.proposals.len(), 2);
+    assert_eq!(page1.proposals.get(0).unwrap().target, targets.get(0).unwrap());
+    assert_eq!(page1.proposals.get(1).unwrap().target, targets.get(1).unwrap());
+    assert_eq!(page1.next_cursor, Some(3));
+
+    // Page 2: limit 2 from cursor 3
+    let page2 = client.list_timelock_proposals(&page1.next_cursor.unwrap(), &2);
+    assert_eq!(page2.proposals.len(), 2);
+    assert_eq!(page2.proposals.get(0).unwrap().target, targets.get(2).unwrap());
+    assert_eq!(page2.proposals.get(1).unwrap().target, targets.get(3).unwrap());
+    assert_eq!(page2.next_cursor, Some(5));
+
+    // Page 3: limit 2 from cursor 5 (last item)
+    let page3 = client.list_timelock_proposals(&page2.next_cursor.unwrap(), &2);
+    assert_eq!(page3.proposals.len(), 1);
+    assert_eq!(page3.proposals.get(0).unwrap().target, targets.get(4).unwrap());
+    assert_eq!(page3.next_cursor, None);
+
+    // Past end cursor returns empty page
+    let page_past = client.list_timelock_proposals(&6, &2);
+    assert_eq!(page_past.proposals.len(), 0);
+    assert_eq!(page_past.next_cursor, None);
+}
+
+#[test]
+fn test_list_timelock_proposals_skip_missing_and_limit_cap() {
+    let (env, admin) = setup_env();
+    let client = HarpocratesRegistryClient::new(&env, &env.register(HarpocratesRegistry, ()));
+    client.init(&admin);
+
+    let t1 = Address::generate(&env);
+    let t2 = Address::generate(&env);
+    client.propose_timelocked_action(
+        &admin,
+        &(ProposalAction::SetVerifier as u32),
+        &t1,
+        &zero_payload(&env),
+    );
+    client.propose_timelocked_action(
+        &admin,
+        &(ProposalAction::RevokeIssuer as u32),
+        &t2,
+        &zero_payload(&env),
+    );
+
+    // Simulate missing/deleted proposal 1 in storage
+    env.storage().persistent().remove(&DataKey::Proposal(1));
+
+    // Listing should skip proposal 1 and return proposal 2
+    let page = client.list_timelock_proposals(&0, &10);
+    assert_eq!(page.proposals.len(), 1);
+    assert_eq!(page.proposals.get(0).unwrap().target, t2);
+    assert_eq!(page.next_cursor, None);
+
+    // Limit capping check: passing limit 0 or > MAX_TIMELOCK_PROPOSALS_PAGE (25)
+    let page_cap = client.list_timelock_proposals(&0, &100);
+    assert_eq!(page_cap.proposals.len(), 1);
+
+    let page_zero = client.list_timelock_proposals(&0, &0);
+    assert_eq!(page_zero.proposals.len(), 1);
+}
+
+#[test]
+fn test_list_timelock_proposals_budget_full_page() {
+    let (env, admin) = setup_env();
+    let client = HarpocratesRegistryClient::new(&env, &env.register(HarpocratesRegistry, ()));
+    client.init(&admin);
+
+    // Populate full page of proposals (25 items)
+    // Clear pending limit restriction or create proposals directly in storage
+    for i in 1..=MAX_TIMELOCK_PROPOSALS_PAGE {
+        let proposal = TimelockProposal {
+            action: ProposalAction::SetVerifier as u32,
+            proposer: admin.clone(),
+            target: Address::generate(&env),
+            payload: zero_payload(&env),
+            created_at: 1000,
+            min_execution_at: 1000 + DEFAULT_TIMELOCK_MIN_DELAY_SECS,
+            executed: false,
+            cancelled: false,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::Proposal(i), &proposal);
+    }
+    env.storage()
+        .persistent()
+        .set(&DataKey::ProposalSeq, &MAX_TIMELOCK_PROPOSALS_PAGE);
+
+    // Reset budget and measure
+    env.cost_estimate().budget().reset_unlimited();
+    let page = client.list_timelock_proposals(&0, &MAX_TIMELOCK_PROPOSALS_PAGE);
+    let budget = env.cost_estimate().budget();
+
+    assert_eq!(page.proposals.len(), MAX_TIMELOCK_PROPOSALS_PAGE);
+    assert_eq!(page.next_cursor, None);
+
+    // Verify CPU and Memory costs stay well within Soroban limits
+    let cpu = budget.cpu_instruction_cost();
+    let mem = budget.memory_bytes_cost();
+
+    // Standard budget check: Soroban standard tx limits are 100M CPU, 40MB mem
+    assert!(cpu < 10_000_000, "CPU cost should be well within bounds: {cpu}");
+    assert!(mem < 2_000_000, "Memory cost should be well within bounds: {mem}");
+}
+

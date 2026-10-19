@@ -147,6 +147,7 @@ fn canonical_name(err: RegistryError) -> &'static str {
         RegistryError::IssuerRotationNotFound => "IssuerRotationNotFound",
         RegistryError::IssuerRotationGraceStillActive => "IssuerRotationGraceStillActive",
         RegistryError::CircuitVersionMismatch => "CircuitVersionMismatch",
+        RegistryError::ReporterDisputesSaturated => "ReporterDisputesSaturated",
     }
 }
 
@@ -241,6 +242,7 @@ const ALL_VARIANTS: &[RegistryError] = &[
     RegistryError::IssuerRotationNotFound,
     RegistryError::IssuerRotationGraceStillActive,
     RegistryError::CircuitVersionMismatch,
+    RegistryError::ReporterDisputesSaturated,
 ];
 
 #[cfg(test)]

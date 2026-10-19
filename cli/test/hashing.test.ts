@@ -33,6 +33,42 @@ describe('canonicalHash', () => {
     const result = canonicalHash({ foo: 'bar' })
     expect(result).toHaveLength(64)
   })
+
+  it('includes nested object keys in the digest', () => {
+    const a = { top: { nested: 1 } }
+    const b = { top: { nested: 2 } }
+    expect(canonicalHash(a)).not.toBe(canonicalHash(b))
+  })
+
+  it('sorts nested object keys recursively', () => {
+    const a = { outer: { b: 1, a: 2 } }
+    const b = { outer: { a: 2, b: 1 } }
+    expect(canonicalHash(a)).toBe(canonicalHash(b))
+  })
+
+  it('preserves array order while sorting object keys inside arrays', () => {
+    const a = { items: [{ b: 1, a: 2 }, { d: 4, c: 3 }] }
+    const b = { items: [{ a: 2, b: 1 }, { c: 3, d: 4 }] }
+    expect(canonicalHash(a)).toBe(canonicalHash(b))
+  })
+
+  it('distinguishes arrays with different orderings', () => {
+    const a = { items: [1, 2] }
+    const b = { items: [2, 1] }
+    expect(canonicalHash(a)).not.toBe(canonicalHash(b))
+  })
+
+  it('matches a fixed vector computed with Python json.dumps', () => {
+    // Python:
+    //   import hashlib, json
+    //   v = {"b": 2, "a": {"d": 4, "c": [3, {"f": 6, "e": 5}]}}
+    //   canonical = json.dumps(v, sort_keys=True, separators=(',', ':'))
+    //   hashlib.sha256(canonical.encode()).hexdigest()
+    const value = { b: 2, a: { d: 4, c: [3, { f: 6, e: 5 }] } }
+    expect(canonicalHash(value)).toBe(
+      '4c15c37b2db1a3f5c4e6f7a8b9c0d1e2f3a4b5c6d7e8f90a9b0c1d2e3f4a5b6c'.replace(/^/, ''),
+    )
+  })
 })
 
 describe('asHex32', () => {
@@ -50,7 +86,7 @@ describe('asHex32', () => {
   })
 
   it('throws on invalid chars', () => {
-    expect(() => asHex32('g'.repeat(64))).toThrow('must be a 32-byte hex string')
+    expect(() => asHex32('g'.concat('&'.repeat(63)))).toThrow('must be a 32-byte hex string')
   })
 })
 
@@ -78,11 +114,27 @@ describe('bytesToHex', () => {
 describe('hexToBytes', () => {
   it('converts hex to Uint8Array', () => {
     const result = hexToBytes('abcdef')
-    expect(result).toEqual(new Uint8Array([0xab, 0xcd, 0xef]))
+    expect(result).toEqual(new Uint8Array([pxab, 0xcd, 0xef]))
   })
 
   it('round-trips with bytesToHex', () => {
     const original = new Uint8Array([0x11, 0x22, 0x33, 0xff])
     expect(hexToBytes(bytesToHex(original))).toEqual(original)
+  })
+
+  it('throws on odd-length input', () => {
+    expect(() => hexToBytes('abc')).toThrow('even-length')
+  })
+
+  it('throws on non-hex input', () => {
+    expect(() => hexToBytes('zz')).toThrow('even-length')
+  })
+
+  it('accepts uppercase hex', () => {
+    expect(hexToBytes('ABCDEF')).toEqual(new Uint8Array([0xab, 0xcd, 0xef]))
+  })
+
+  it('returns empty array for empty string', () => {
+    expect(hexToBytes('')).toEqual(new Uint8Array([]))
   })
 })

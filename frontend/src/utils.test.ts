@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { describe, it, expect, vi } from 'vitest'
 import { hex, sha256, sha256Blob, shortHash, fieldSecret } from './utils'
 
@@ -223,5 +224,26 @@ describe('fieldSecret', () => {
       fieldSecret('nullifier', 'determinism-test'),
     ])
     expect(first).toBe(second)
+  })
+
+  it('matches the reference derivation SHA-256("harpocrates:{label}:{seed}") mod BN254', async () => {
+    const BN254 =
+      21888242871839275222246405745257275088548364400416034343698204186575808495617n
+    const reference = (label: string, seed: string) => {
+      const digest = createHash('sha256').update(`harpocrates:${label}:${seed}`).digest('hex')
+      const value = BigInt(`0x${digest}`) % BN254
+      return value === 0n ? '1' : value.toString(10)
+    }
+    const vectors: Array<[string, string]> = [
+      ['credential', 'my-secret'],
+      ['nullifier', 'my-secret'],
+      ['credential', 'same-seed'],
+      ['nullifier', 'determinism-test'],
+      ['credential', ''],
+      ['nullifier', 'ünïcödé seed'],
+    ]
+    for (const [label, seed] of vectors) {
+      expect(await fieldSecret(label, seed)).toBe(reference(label, seed))
+    }
   })
 })
