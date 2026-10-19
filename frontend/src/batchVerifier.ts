@@ -1,6 +1,7 @@
 import type { ChainProofRecord } from './stellar'
 import { verifyArtifact, type VerificationEvent } from './verificationFlow'
 import type { ProofManifest } from './proofManifest'
+import { appConfig } from './config'
 
 export type BatchOutcome =
   | 'pending'
@@ -75,8 +76,8 @@ export const DEFAULT_BATCH_CONFIG: BatchConfig = {
   maxConcurrency: 3,
   maxFileSizeBytes: 100 * 1024 * 1024, // 100 MB
   maxTotalSizeBytes: 500 * 1024 * 1024, // 500 MB
-  apiBase: import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5050',
-  contractId: import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? '',
+  apiBase: appConfig.apiBase,
+  contractId: appConfig.registryId,
 }
 
 /**
@@ -100,7 +101,7 @@ export async function computeChunkedSha256(
     return hex(digest)
   }
 
-  // For larger files, read in chunks to allow responsive cancellation and avoid UI freeze
+  // For larger files, read in chunks to allow responsive cancellation and avoid UI hide
   let offset = 0
   const chunks: Uint8Array[] = []
   let totalRead = 0
@@ -397,45 +398,67 @@ export class BatchVerifier {
       const result = await verifyArtifact({
         apiBase: this.config.apiBase,
         contractId: this.config.contractId,
-        file: item.file,
-        videoHash,
         wallet: this.config.wallet,
+        file: item.file,
+        signal,
+        onEvent: (event) => {
+          item.events.push(event)
+          if (event.message) {
+            item.message = event.message
+          }
+          this.notifyProgress(false, false)
+        },
       })
 
+      item.videoHash = result.videoHash ?? item.videoHash
+      item.metadataHash = result.metadataHash ?? null
+      item.sourceHash = result.sourceHash ?? null
+      item.tier = result.tier ?? null
+      item.chainProof = result.chainProof ?? null
+      item.chainStatus = result.chainStatus ?? null
+      item.status = result.status
+      item.message = result.message
+      item.failureReason = result.failureReason ?? null
+      item.durationMs = performance.now() - itemStart
+    } catch (err) {
       if (signal.aborted) {
         item.status = 'cancelled'
-        item.message = 'Cancelled during verification.'
-        return
-      }
-
-      item.status = result.outcome
-      item.message = result.message
-      item.events = result.events
-      item.chainProof = result.chainProof
-      if (result.chainProof) {
-        item.tier = String(result.chainProof.tier)
-        item.metadataHash = result.chainProof.metadataHash
-        item.chainStatus = result.chainProof.status === 2 ? 'Revoked' : 'Active'
-      }
-
-      if (result.outcome === 'malformed') {
-        item.failureReason = 'Embedded Harpocrates stego metadata missing or corrupted.'
-      } else if (result.outcome === 'unavailable') {
-        item.failureReason = 'Stego extraction backend or Soroban RPC network unavailable.'
-      }
-    } catch (err) {
-      if (signal.aborted || (err instanceof Error && err.message.includes('cancelled'))) {
-        item.status = 'cancelled'
-        item.message = 'Cancelled by user.'
-        item.failureReason = 'Batch execution aborted.'
+        item.message = 'Cancelled.'
+        item.failureReason = 'Batch execution was aborted by user request.'
       } else {
         item.status = 'error'
-        item.message = err instanceof Error ? err.message : 'Unknown verification failure.'
+        item.message = err instanceof Error ? err.message : 'Unknown error.'
         item.failureReason = item.message
       }
-    } finally {
       item.durationMs = performance.now() - itemStart
     }
+  }
+
+  private notifyProgress(isCancelled: boolean, isDone: boolean): void {
+    if (!this.onProgressCallback) return
+    const totalFiles = this.items.length
+    const completedFiles = this.items.filter(
+      (i) => i.status !== 'pending' && i.status !== 'hashing' && i.status !== 'processing',
+    ).length
+    const activeCount = this.items.filter(
+      (i) => i.status === 'hashing' || i.status === 'processing',
+    ).length
+    const processedBytes = this.items.reduce((acc, i) => {
+      if (i.status === 'pending' || i.status === 'hashing') return acc
+      return acc + i.fileSizeBytes
+    }, 0)
+    this.onProgressCallback(
+      {
+        totalFiles,
+        completedFiles,
+        processedBytes,
+        totalBytes: this.accumulatedTotalBytes,
+        activeCount,
+        isCancelled,
+        isDone,
+      },
+      [...this.items],
+    )
   }
 
   private computeSummary(durationMs: number): BatchSummary {
@@ -448,11 +471,12 @@ export class BatchVerifier {
       duplicates: 0,
       errors: 0,
       cancelled: 0,
-      totalBytes: this.items.reduce((acc, item) => acc + item.fileSizeBytes, 0),
+      totalBytes: 0,
       durationMs,
     }
 
     for (const item of this.items) {
+      summary.totalBytes += item.fileSizeBytes
       switch (item.status) {
         case 'confirmed':
           summary.confirmed++
@@ -460,55 +484,28 @@ export class BatchVerifier {
         case 'revoked':
           summary.revoked++
           break
-        case 'metadata-only':
-        case 'database-only':
-          summary.unconfirmed++
-          break
         case 'manifest-valid':
+        case 'manifest-invalid':
           summary.manifests++
           break
         case 'duplicate':
           summary.duplicates++
           break
-        case 'oversized':
-        case 'malformed':
-        case 'manifest-invalid':
-        case 'error':
-          summary.errors++
-          break
         case 'cancelled':
           summary.cancelled++
+          break
+        case 'error':
+        case 'malformed':
+        case 'oversized':
+        case 'unavailable':
+          summary.errors++
+          break
+        default:
+          summary.unconfirmed++
           break
       }
     }
 
     return summary
-  }
-
-  private notifyProgress(isCancelled: boolean, isDone: boolean): void {
-    if (!this.onProgressCallback) return
-
-    const totalFiles = this.items.length
-    const completedFiles = this.items.filter(
-      (item) => item.status !== 'pending' && item.status !== 'hashing' && item.status !== 'processing',
-    ).length
-    const activeCount = this.items.filter(
-      (item) => item.status === 'hashing' || item.status === 'processing',
-    ).length
-    const processedBytes = this.items
-      .filter((item) => item.status !== 'pending')
-      .reduce((acc, item) => acc + item.fileSizeBytes, 0)
-
-    const progress: BatchProgress = {
-      totalFiles,
-      completedFiles,
-      processedBytes,
-      totalBytes: this.accumulatedTotalBytes || this.items.reduce((acc, i) => acc + i.fileSizeBytes, 0),
-      activeCount,
-      isCancelled,
-      isDone: isDone || completedFiles === totalFiles,
-    }
-
-    this.onProgressCallback(progress, [...this.items])
   }
 }

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Wallet } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Wallet, X } from 'lucide-react'
 import EvilEye from './components/EvilEye'
 import BatchVerificationWorkspace from './components/BatchVerificationWorkspace'
 import { LandingView } from './views/LandingView'
@@ -8,18 +8,20 @@ import { VerifyView } from './views/VerifyView'
 import { useWallet } from './hooks/useWallet'
 import { useEvidence } from './hooks/useEvidence'
 import { useVerification } from './hooks/useVerification'
-import { useLiveRegion, useA11yStage, useSkipLink } from './hooks/useA11y'
+import { useLiveRegion, useAa11Stage, useSkipLink } from './hooks/useAa11'
 import type { IdentityTier } from './types'
 import type { View } from './types'
 import { createProofManifest } from './proofManifest'
-import { CONTRACT_NETWORK_PASSPHRASE } from './stellar'
+import { CONTRACT_NETWORK_PASSTHRASE } from './stellar'
 import { buildProvenanceRecord } from './provenance/provenanceModel'
 import { parseVerificationShareLink, type VerificationSharePayload } from './verificationShareLink'
+import { checkReleaseCompatibility, type ReleaseCompatibilityResult } from './releaseCompatibility'
+import { appConfig } from './config'
 import './App.css'
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5050'
-const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
-const RPC_URL = import.meta.env.VITE_STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org'
+const API_BASE = appConfig.apiBase
+const CONTRACT_ID = appConfig.harpocratesRegistryId
+const RPC_URL = appConfig.stellarRpcUrl
 
 type AppView = View | 'batch'
 
@@ -44,6 +46,8 @@ function App() {
   const [currentView, setCurrentView] = useState<AppView>(initialView)
   const [sharePayload] = useState<VerificationSharePayload | null>(initialSharePayload)
   const [isScrolled, setIsScrolled] = useState(false)
+  const [releaseCompatibility] = useState<ReleaseCompatibilityResult>(() => checkReleaseCompatibility())
+  const [releaseCompatibilityDismissed, setReleaseCompatibilityDismissed] = useState(false)
 
   const { wallet, networkMismatch: walletNetworkMismatch, connectWallet } = useWallet()
   const evidence = useEvidence()
@@ -57,7 +61,7 @@ function App() {
 
   const liveStatus = useLiveRegion()
   const liveAlert = useLiveRegion()
-  const { statusLabel } = useA11yStage(evidence.stage)
+  const { statusLabel } = useAa11Stage(evidence.stage)
   const { mainRef, handleSkip } = useSkipLink()
 
   const prevStageRef = useRef(evidence.stage)
@@ -93,7 +97,7 @@ function App() {
       manifest: createProofManifest({
         proofId: evidence.proof.proofId,
         tier: evidence.proof.tier,
-        network: CONTRACT_NETWORK_PASSPHRASE,
+        network: CONTRACT_NETWORK_PASSTHRASE,
         contractId: CONTRACT_ID,
         transactionRef: evidence.registration?.hash ?? '',
         videoHash: evidence.proof.videoHash,
@@ -206,6 +210,34 @@ function App() {
           >
             <span className="network-mismatch-icon" aria-hidden="true">⚠</span>
             <span>{walletNetworkMismatch}</span>
+          </div>
+        ) : null}
+
+        {!releaseCompatibility.compatible && !releaseCompatibilityDismissed ? (
+          <div
+            id="release-compatibility-banner"
+            className="network-mismatch-banner network-mismatch-banner--global release-compatibility-banner"
+            role="alert"
+            aria-live="assertive"
+            aria-atomic="true"
+            aria-label="Incompatible release configuration"
+          >
+            <span className="network-mismatch-icon" aria-hidden="true">⚠</span>
+            <div className="release-compatibility-banner__content">
+              <strong>Incompatible Release Configuration:</strong> Expected release{' '}
+              <code>{releaseCompatibility.expectedReleaseId}</code> on network{' '}
+              <code>{releaseCompatibility.expectedNetwork}</code>, but configured with release{' '}
+              <code>{releaseCompatibility.configuredReleaseId}</code> on network{' '}
+              <code>{releaseCompatibility.configuredNetwork}</code>.
+            </div>
+            <button
+              type="button"
+              className="release-compatibility-banner__dismiss"
+              onClick={() => setReleaseCompatibilityDismissed(true)}
+              aria-label="Dismiss compatibility banner"
+            >
+              <X size={16} aria-hidden="true" />
+            </button>
           </div>
         ) : null}
 
