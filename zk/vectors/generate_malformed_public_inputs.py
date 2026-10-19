@@ -21,8 +21,12 @@ migration note in docs/zk-conformance-vectors.md.
 
 from __future__ import annotations
 
+import argparse
+from collections.abc import Sequence
+import difflib
 import json
 from pathlib import Path
+import sys
 
 OUT_PATH = Path(__file__).resolve().parent / "malformed_public_inputs_v1.json"
 
@@ -212,7 +216,17 @@ def build_document() -> dict[str, object]:
     }
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="verify committed vector file matches generated output without writing",
+    )
+    if argv is None:
+        argv = sys.argv[1:] if Path(sys.argv[0]).name == Path(__file__).name else []
+    args = parser.parse_args(list(argv))
+
     document = build_document()
     seen: set[str] = set()
     for entry in document["cases"]:  # type: ignore[index]
@@ -221,12 +235,37 @@ def main() -> None:
             raise SystemExit(f"duplicate case id: {case_id}")
         seen.add(case_id)
 
+    rendered = json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+    if args.check:
+        if not OUT_PATH.is_file():
+            print(f"missing vector file: {OUT_PATH}", file=sys.stderr)
+            raise SystemExit(1)
+        committed = OUT_PATH.read_text(encoding="utf-8")
+        if committed != rendered:
+            diff = "".join(
+                difflib.unified_diff(
+                    committed.splitlines(keepends=True),
+                    rendered.splitlines(keepends=True),
+                    fromfile=f"{OUT_PATH.name} (committed)",
+                    tofile=f"{OUT_PATH.name} (generated)",
+                )
+            )
+            print(
+                f"{OUT_PATH} is out of date; regenerate with `{document['regenerate_with']}`:",
+                file=sys.stderr,
+            )
+            print(diff, end="", file=sys.stderr)
+            raise SystemExit(1)
+        print(f"verified {len(document['cases'])} cases in {OUT_PATH}")  # type: ignore[arg-type]
+        return 0
+
     OUT_PATH.write_text(
-        json.dumps(document, indent=2, ensure_ascii=False) + "\n",
+        rendered,
         encoding="utf-8",
     )
     print(f"wrote {len(document['cases'])} cases to {OUT_PATH}")  # type: ignore[arg-type]
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main(sys.argv[1:]))

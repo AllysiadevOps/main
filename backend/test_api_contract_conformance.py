@@ -52,6 +52,13 @@ if str(REPO_ROOT / "devx") not in sys.path:
 import generate_api_schema  # noqa: E402  (path is set above)
 
 import app as app_module  # noqa: E402
+from capture_attestation import (  # noqa: E402
+    AppIdentity,
+    CaptureAttestation,
+    canonical_attestation_hash,
+    encode_attestation,
+    make_device_commitment,
+)
 
 # ---------------------------------------------------------------------------
 # Contract constants
@@ -211,6 +218,37 @@ def _error_probes(client) -> list[tuple[str, object, str]]:
             client.post("/api/noir/silent-witness", json={"credentialSecret": SENSITIVE_SENTINEL}),
             "envelope",
         ),
+        (
+            "capture_attestation_verify_missing_json_body",
+            client.post(
+                "/api/capture-attestation/verify",
+                data="not json",
+                content_type="text/plain",
+            ),
+            "envelope",
+        ),
+        (
+            "capture_attestation_verify_malformed_attestation",
+            client.post(
+                "/api/capture-attestation/verify",
+                json={
+                    "attestation": {"profile": SENSITIVE_SENTINEL},
+                    "evidence_digest": HEX_32,
+                },
+            ),
+            "envelope",
+        ),
+        (
+            "capture_attestation_verify_invalid_evidence_digest",
+            client.post(
+                "/api/capture-attestation/verify",
+                json={
+                    "attestation": {},
+                    "evidence_digest": SENSITIVE_SENTINEL,
+                },
+            ),
+            "envelope",
+        ),
         # --- legacy flat body ------------------------------------------
         (
             "embed_missing_fields",
@@ -258,6 +296,11 @@ def _error_probes(client) -> list[tuple[str, object, str]]:
             "lineage_actor_limit_not_integer",
             client.get("/api/lineage/by-actor/unknown", query_string={"limit": "abc"}),
             "flat",
+        ),
+        (
+            "lineage_by_output_digest_malformed",
+            client.get("/api/lineage/not-a-hash"),
+            "envelope",
         ),
         (
             "proof_history_invalid_id",
@@ -575,6 +618,23 @@ class ErrorEnvelopeConformanceTest(unittest.TestCase):
             self.client.get("/api/proofs", query_string={"cursor": "@@@"}), status=400
         )
 
+    def test_lineage_by_output_digest_malformed_is_validation_envelope(self) -> None:
+        body = self._assert_envelope(
+            self.client.get("/api/lineage/not-a-hash"),
+            code=VALIDATION_ERROR,
+        )
+        self.assertEqual(
+            body["error"]["message"],
+            "output_digest must be a 32-byte hex string",
+        )
+
+    def test_lineage_by_output_digest_missing_is_not_found_envelope(self) -> None:
+        body = self._assert_envelope(
+            self.client.get(f"/api/lineage/{'ff' * 32}"),
+            code=NOT_FOUND,
+        )
+        self.assertTrue(body["error"]["message"])
+
     def test_every_error_probe_matches_a_documented_shape(self) -> None:
         for name, response, expected_shape in _error_probes(self.client):
             with self.subTest(probe=name):
@@ -664,6 +724,37 @@ class SuccessEnvelopeConformanceTest(unittest.TestCase):
         self.assertTrue(body["sessionId"])
         self.assertEqual(body["request_id"], response.headers["X-Request-ID"])
 
+    def test_capture_attestation_verify_contract(self) -> None:
+        device_key = b"k" * 32
+        capture_nonce = "11" * 32
+        evidence_digest = "22" * 32
+        commitment = make_device_commitment(capture_nonce, device_key)
+        attestation = CaptureAttestation(
+            version=1,
+            trust_level=2,
+            capture_nonce=capture_nonce,
+            app_identity=AppIdentity(
+                package_name="com.harpocrates.app", version_code="1"
+            ),
+            device_commitment=commitment,
+            privacy_scope="per_session",
+            evidence_digest_binding=evidence_digest,
+        )
+        payload = {
+            "attestation": encode_attestation(attestation),
+            "evidence_digest": evidence_digest,
+        }
+        response = self.client.post("/api/capture-attestation/verify", json=payload)
+        self.assertEqual(response.status_code, 200)
+        body = _get_json(response)
+        self.assertIs(body["ok"], True)
+        self.assertIs(body["valid"], True)
+        self.assertEqual(
+            body["attestation_hash"], canonical_attestation_hash(attestation)
+        )
+        self.assertEqual(body["checks"], {"evidence_binding": True})
+        self.assertEqual(body["request_id"], response.headers["X-Request-ID"])
+
     def test_request_id_propagates_to_every_json_object_body(self) -> None:
         for method, path in (
             ("get", "/health"),
@@ -671,6 +762,7 @@ class SuccessEnvelopeConformanceTest(unittest.TestCase):
             ("get", "/api/schemas"),
             ("get", "/api/proofs"),
             ("get", "/api/proofs/lineage"),
+            ("get", f"/api/lineage/{'ff' * 32}"),
         ):
             with self.subTest(path=path):
                 response = getattr(self.client, method)(path)

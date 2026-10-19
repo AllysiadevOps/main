@@ -1,4 +1,4 @@
-/*
+/**
  * harpocratesRegistry — typed reader for the Harpocrates registry contract.
  *
  * Wraps the on-chain `get_metadata_envelope(proof_id)` view function described in
@@ -157,7 +157,7 @@ export function normaliseMetadataEnvelope(
   if (!raw) return null
   const version = toNumber(raw.version)
   const metadataHash = normaliseHash(raw.metadata_hash ?? raw.metadataHash)
-  const boundAt = toNumber(raw.bound_at ??raw.boundAt)
+  const boundAt = toNumber(raw.bound_at ?? raw.boundAt)
   if (version === null || metadataHash === null || boundAt === null) {
     return null
   }

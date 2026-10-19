@@ -605,3 +605,97 @@ fn lifecycle_invalid_reason_code_rejected() {
     client.register_source(&source, &b32(&env, 0x11), &b32(&env, 0x12), &proof_id);
     client.verify_proof(&admin, &proof_id, &256);
 }
+
+// ---------------------------------------------------------------------------
+// Out-of-range proof history reads
+// ---------------------------------------------------------------------------
+
+#[test]
+fn history_reads_for_unknown_proof_id_fail_cleanly() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let unknown_proof_id = b32(&env, 0xFE);
+
+    client.init(&admin);
+
+    assert_eq!(client.get_proof_history_count(&unknown_proof_id), 0);
+    assert!(client.get_proof_history_at(&unknown_proof_id, &0).is_none());
+    assert!(client.get_proof_history_at(&unknown_proof_id, &1).is_none());
+    assert!(client.get_proof_history_at(&unknown_proof_id, &u32::MAX).is_none());
+}
+
+#[test]
+fn history_reads_at_index_equal_to_count_and_max_u32_fail_cleanly() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let source = Address::generate(&env);
+    let proof_id = b32(&env, 0x21);
+
+    client.init(&admin);
+    // Registration creates 1 history entry (seq = 1).
+    client.register_source(&source, &b32(&env, 0x22), &b32(&env, 0x23), &proof_id);
+
+    let count = client.get_proof_history_count(&proof_id);
+    assert_eq!(count, 1);
+
+    // Sequence numbers are 1-based (1..=count).
+    // An index equal to count (if interpreted as 0-based offset, or beyond count):
+    // index == count + 1 is beyond count:
+    assert!(client.get_proof_history_at(&proof_id, &(count + 1)).is_none());
+    // Also index == 0 (0-indexed count or invalid 0 seq):
+    assert!(client.get_proof_history_at(&proof_id, &0).is_none());
+    // Large index / u32::MAX:
+    assert!(client.get_proof_history_at(&proof_id, &u32::MAX).is_none());
+
+    // Add another lifecycle action so count is 2 (seq 1 and 2 exist).
+    client.verify_proof(&admin, &proof_id, &1);
+    let count2 = client.get_proof_history_count(&proof_id);
+    assert_eq!(count2, 2);
+
+    // Valid sequence numbers return Some.
+    assert!(client.get_proof_history_at(&proof_id, &1).is_some());
+    assert!(client.get_proof_history_at(&proof_id, &2).is_some());
+
+    // Out of range:
+    assert!(client.get_proof_history_at(&proof_id, &(count2 + 1)).is_none());
+    assert!(client.get_proof_history_at(&proof_id, &u32::MAX).is_none());
+}
+
+#[test]
+fn history_reads_at_history_cap_fail_cleanly() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let source = Address::generate(&env);
+    let proof_id = b32(&env, 0x31);
+
+    client.init(&admin);
+    // Registration creates 1 history entry (seq = 1).
+    client.register_source(&source, &b32(&env, 0x32), &b32(&env, 0x33), &proof_id);
+
+    // Fill history up to MAX_HISTORY_ENTRIES_PER_PROOF (256 entries).
+    for _ in 1..MAX_HISTORY_ENTRIES_PER_PROOF {
+        client.verify_proof(&admin, &proof_id, &1);
+    }
+
+    let count = client.get_proof_history_count(&proof_id);
+    assert_eq!(count, MAX_HISTORY_ENTRIES_PER_PROOF);
+
+    // First and last valid entries exist.
+    assert!(client.get_proof_history_at(&proof_id, &1).is_some());
+    assert!(client.get_proof_history_at(&proof_id, &MAX_HISTORY_ENTRIES_PER_PROOF).is_some());
+
+    // Out of range at cap:
+    assert!(client.get_proof_history_at(&proof_id, &0).is_none());
+    assert!(client.get_proof_history_at(&proof_id, &(MAX_HISTORY_ENTRIES_PER_PROOF + 1)).is_none());
+    assert!(client.get_proof_history_at(&proof_id, &u32::MAX).is_none());
+}
+

@@ -162,6 +162,24 @@ describe('parseManifest', () => {
   })
 })
 
+describe('createProofManifest — golden serialization', () => {
+  it('produces the canonical serialized string for a fixed input', () => {
+    const manifest = createProofManifest(VALID_INPUT)
+    const expected =
+      '{"contractId":"CAAAAAAAAABCD1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890","epoch":0,"metadataHash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","network":"Test SDF Network ; September 2015","proofId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","protocol":"harpocrates","sourceHash":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","tier":"silent","timestamp":"2026-07-24T12:00:00.000Z","transactionRef":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","verifierScope":"0","version":2,"videoHash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}'
+    expect(serializeManifest(manifest)).toBe(expected)
+  })
+
+  it('keeps key ordering stable and deterministic across calls', () => {
+    const manifest = createProofManifest(VALID_INPUT)
+    const first = serializeManifest(manifest)
+    const second = serializeManifest(createProofManifest(VALID_INPUT))
+    expect(first).toBe(second)
+    const keys = Object.keys(JSON.parse(first) as ProofManifest)
+    expect(keys).toEqual([...keys].sort())
+  })
+})
+
 describe('createProofManifest — boundary and regression', () => {
   it('does not include protocol or version in witness-privacy check', () => {
     // protocol and version are public; privacy check applies to witness fields only

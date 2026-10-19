@@ -28,6 +28,7 @@
 // secret is ever emitted by the circuit or its test corpus.
 // =============================================================================
 
+use harpocrates_common::expected_domain_tag;
 use std::hash::pedersen_hash;
 
 // Canonical lineage operation identifier. This is the ASCII encoding of the
@@ -48,16 +49,6 @@ global DOMAIN_REDACT_PARAMS: Field = 0x0048505f5245444143545f504152414d535f5631;
 global DOMAIN_DERIVATIVE: Field = 0x0048505f5245444143545f44455249565f5631; // "HP_REDACT_DERIV_V1"
 global DOMAIN_ANCESTRY: Field = 0x0048505f5245444143545f414e4345535452595f5631; // "HP_REDACT_ANCESTRY_V1"
 global DOMAIN_NULLIFIER: Field = 0x0048505f5245444143545f4e554c4c49464945525f5631; // "HP_REDACT_NULLIFIER_V1"
-
-// Shared protocol / version / network domain fields, identical to the
-// silent_witness circuit so a proof is bound to the same protocol boundary.
-global DOMAIN_PROTOCOL_FIELD: Field = 0x261e9f6e39e3c1ae6aca9f29e84c10d59c82d5f4b40c21c1b7e3c01ad571c201;
-global DOMAIN_VERSION_FIELD: Field = 0x0c89eff4ec8e39a01e9f19547a0cc9dd7fd2a97d79ba4d94fd32e97a1f5ac623;
-global DOMAIN_NETWORK_FIELD: Field = 0x2a2c3f48ce2e3c2f1e6c89b18d64b5f5c1f88a59a0d9bc82cb61a1e8cb77a50f;
-
-fn expected_domain_tag() -> Field {
-    pedersen_hash([DOMAIN_PROTOCOL_FIELD, DOMAIN_VERSION_FIELD, DOMAIN_NETWORK_FIELD])
-}
 
 fn derive_parent_commitment(parent_hash_hi: Field, parent_hash_lo: Field, parent_blinding: Field) -> Field {
     pedersen_hash([DOMAIN_PARENT_COMMIT, parent_hash_hi, parent_hash_lo, parent_blinding])

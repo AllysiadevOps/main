@@ -83,12 +83,12 @@
     {
       "component": "circuit",
       "path": "zk/noir/silent_witness/Nargo.toml",
-      "sha256": "5409afc3bf8006190be0dc19392c3e28a5c36143791c9fef998e7da6227ce222"
+      "sha256": "6c7e229512105da836add0a78c41396f5b243e7a1f7cdb2cf96f2a76d63fbd28"
     },
     {
       "component": "circuit",
       "path": "zk/noir/silent_witness/src/main.nr",
-      "sha256": "b20f67986beb83904eb8a2a30f5d94c335c8f31b9bd5fb7d37243b8ff90f1f8a"
+      "sha256": "a418b2f1eea19a54901b019afb6a42fa96e1616ba608e4ede587a32c1b2c918c"
     },
     {
       "component": "verifier",

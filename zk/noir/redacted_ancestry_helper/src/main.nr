@@ -10,6 +10,11 @@
 // secrets at the trust boundary.
 // =============================================================================
 
+use harpocrates_common::{
+    DOMAIN_NETWORK_FIELD,
+    DOMAIN_PROTOCOL_FIELD,
+    DOMAIN_VERSION_FIELD,
+};
 use std::hash::pedersen_hash;
 
 global OPERATION_REDACT: Field = 0x726564616374; // ASCII "redact"
@@ -19,10 +24,6 @@ global DOMAIN_REDACT_PARAMS: Field = 0x0048505f5245444143545f504152414d535f5631;
 global DOMAIN_DERIVATIVE: Field = 0x0048505f5245444143545f44455249565f5631; // "HP_REDACT_DERIV_V1"
 global DOMAIN_ANCESTRY: Field = 0x0048505f5245444143545f414e4345535452595f5631; // "HP_REDACT_ANCESTRY_V1"
 global DOMAIN_NULLIFIER: Field = 0x0048505f5245444143545f4e554c4c49464945525f5631; // "HP_REDACT_NULLIFIER_V1"
-
-global DOMAIN_PROTOCOL_FIELD: Field = 0x261e9f6e39e3c1ae6aca9f29e84c10d59c82d5f4b40c21c1b7e3c01ad571c201;
-global DOMAIN_VERSION_FIELD: Field = 0x0c89eff4ec8e39a01e9f19547a0cc9dd7fd2a97d79ba4d94fd32e97a1f5ac623;
-global DOMAIN_NETWORK_FIELD: Field = 0x2a2c3f48ce2e3c2f1e6c89b18d64b5f5c1f88a59a0d9bc82cb61a1e8cb77a50f;
 
 global CIRCUIT_VERSION: Field = 1;
 

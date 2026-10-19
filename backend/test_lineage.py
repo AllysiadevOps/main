@@ -57,7 +57,7 @@ class LineageManifestTests(unittest.TestCase):
             validate_lineage_graph(
                 parent_proof_ids=[output],
                 depth=1,
-                actor_address="GABC123",
+                actor_address="GAJC123",
                 output_digest=output,
             )
         self.assertIn("cycle", str(ctx.exception).lower())
@@ -78,3 +78,4 @@ class LineageManifestTests(unittest.TestCase):
             actor_address="GABC123",
             output_digest="c" * 64,
         )
+

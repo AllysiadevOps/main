@@ -301,5 +301,210 @@ class TestMinimalAttestation(unittest.TestCase):
         self.assertEqual(encoded["profile"], "harpocrates-capture-attestation/v1")
 
 
+class TestCaptureAttestationRoute(unittest.TestCase):
+    """Route tests for POST /api/capture-attestation/verify."""
+
+    def setUp(self):
+        from app import create_app
+
+        self.app = create_app()
+        self.client = self.app.test_client()
+
+        self.device_key = os.urandom(32)
+        self.nonce = hashlib.sha256(b"route-test-nonce").hexdigest()
+        self.evidence = b"route-test-evidence-bytes"
+        self.evidence_digest = hashlib.sha256(self.evidence).hexdigest()
+
+        self.attestation = CaptureAttestation(
+            version=1,
+            trust_level=2,
+            capture_nonce=self.nonce,
+            app_identity=AppIdentity(
+                package_name="com.harpocrates.camera",
+                version_code="10",
+                build_fingerprint="google/sunfish:12/SP1A",
+                signing_digest=hashlib.sha256(b"cert").hexdigest(),
+            ),
+            device_commitment=make_device_commitment(self.nonce, self.device_key),
+            privacy_scope="per_session",
+            evidence_digest_binding=self.evidence_digest,
+            secure_time=SecureTime(unix_ms=1721971200000, source="hardware_clock", drift_ms=50),
+            camera_pipeline=CameraPipeline(
+                sensor_orientation=0,
+                has_watermark=False,
+                claimed_integrity="raw_sensor",
+            ),
+        )
+        self.encoded_attestation = encode_attestation(self.attestation)
+
+    def test_valid_attestation_returns_valid_true_and_canonical_hash(self):
+        res = self.client.post(
+            "/api/capture-attestation/verify",
+            json={
+                "attestation": self.encoded_attestation,
+                "evidence_digest": self.evidence_digest,
+            },
+        )
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertTrue(data.get("ok"))
+        self.assertTrue(data.get("valid"))
+        self.assertEqual(data.get("attestation_hash"), canonical_attestation_hash(self.attestation))
+        self.assertEqual(data.get("checks"), {"evidence_binding": True})
+        self.assertIn("request_id", data)
+
+    def test_mismatched_evidence_digest_reports_failing_check(self):
+        wrong_digest = hashlib.sha256(b"tampered-evidence").hexdigest()
+        res = self.client.post(
+            "/api/capture-attestation/verify",
+            json={
+                "attestation": self.encoded_attestation,
+                "evidence_digest": wrong_digest,
+            },
+        )
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertTrue(data.get("ok"))
+        self.assertFalse(data.get("valid"))
+        self.assertEqual(data.get("attestation_hash"), canonical_attestation_hash(self.attestation))
+        self.assertEqual(data.get("checks"), {"evidence_binding": False})
+
+    def test_device_commitment_verification_with_matching_device_key(self):
+        res = self.client.post(
+            "/api/capture-attestation/verify",
+            json={
+                "attestation": self.encoded_attestation,
+                "evidence_digest": self.evidence_digest,
+                "device_key": self.device_key.hex(),
+            },
+        )
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertTrue(data.get("ok"))
+        self.assertTrue(data.get("valid"))
+        self.assertEqual(
+            data.get("checks"),
+            {"evidence_binding": True, "device_commitment": True},
+        )
+
+    def test_device_commitment_verification_with_mismatched_device_key(self):
+        wrong_key = os.urandom(32).hex()
+        res = self.client.post(
+            "/api/capture-attestation/verify",
+            json={
+                "attestation": self.encoded_attestation,
+                "evidence_digest": self.evidence_digest,
+                "device_key": wrong_key,
+            },
+        )
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertTrue(data.get("ok"))
+        self.assertFalse(data.get("valid"))
+        self.assertEqual(
+            data.get("checks"),
+            {"evidence_binding": True, "device_commitment": False},
+        )
+
+    def test_camel_case_input_fields_accepted(self):
+        res = self.client.post(
+            "/api/capture-attestation/verify",
+            json={
+                "attestation": self.encoded_attestation,
+                "evidenceDigest": self.evidence_digest,
+                "deviceKey": self.device_key.hex(),
+            },
+        )
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertTrue(data.get("valid"))
+        self.assertTrue(data.get("checks")["evidence_binding"])
+        self.assertTrue(data.get("checks")["device_commitment"])
+
+    def test_malformed_missing_attestation_returns_400(self):
+        res = self.client.post(
+            "/api/capture-attestation/verify",
+            json={"evidence_digest": self.evidence_digest},
+        )
+        self.assertEqual(res.status_code, 400)
+        data = res.get_json()
+        self.assertFalse(data.get("ok"))
+        self.assertEqual(data["error"]["code"], "VALIDATION_ERROR")
+        self.assertEqual(data["error"]["message"], "attestation is required")
+
+    def test_malformed_attestation_not_dict_returns_400(self):
+        res = self.client.post(
+            "/api/capture-attestation/verify",
+            json={"attestation": "not-an-object", "evidence_digest": self.evidence_digest},
+        )
+        self.assertEqual(res.status_code, 400)
+        data = res.get_json()
+        self.assertFalse(data.get("ok"))
+        self.assertEqual(data["error"]["code"], "VALIDATION_ERROR")
+        self.assertEqual(data["error"]["message"], "attestation must be a JSON object")
+
+    def test_malformed_missing_evidence_digest_returns_400(self):
+        res = self.client.post(
+            "/api/capture-attestation/verify",
+            json={"attestation": self.encoded_attestation},
+        )
+        self.assertEqual(res.status_code, 400)
+        data = res.get_json()
+        self.assertFalse(data.get("ok"))
+        self.assertEqual(data["error"]["code"], "VALIDATION_ERROR")
+        self.assertEqual(data["error"]["message"], "evidence_digest is required")
+
+    def test_malformed_invalid_hex_evidence_digest_returns_400(self):
+        res = self.client.post(
+            "/api/capture-attestation/verify",
+            json={"attestation": self.encoded_attestation, "evidence_digest": "not-hex-digest"},
+        )
+        self.assertEqual(res.status_code, 400)
+        data = res.get_json()
+        self.assertFalse(data.get("ok"))
+        self.assertEqual(data["error"]["code"], "VALIDATION_ERROR")
+        self.assertEqual(data["error"]["message"], "evidence_digest must be a 32-byte hex string")
+
+    def test_malformed_invalid_hex_device_key_returns_400(self):
+        res = self.client.post(
+            "/api/capture-attestation/verify",
+            json={
+                "attestation": self.encoded_attestation,
+                "evidence_digest": self.evidence_digest,
+                "device_key": "short-key",
+            },
+        )
+        self.assertEqual(res.status_code, 400)
+        data = res.get_json()
+        self.assertFalse(data.get("ok"))
+        self.assertEqual(data["error"]["code"], "VALIDATION_ERROR")
+        self.assertEqual(data["error"]["message"], "device_key must be a 32-byte hex string")
+
+    def test_malformed_attestation_fields_returns_400(self):
+        bad_attestation = dict(self.encoded_attestation)
+        bad_attestation["profile"] = "wrong-profile"
+        res = self.client.post(
+            "/api/capture-attestation/verify",
+            json={"attestation": bad_attestation, "evidence_digest": self.evidence_digest},
+        )
+        self.assertEqual(res.status_code, 400)
+        data = res.get_json()
+        self.assertFalse(data.get("ok"))
+        self.assertEqual(data["error"]["code"], "VALIDATION_ERROR")
+        self.assertEqual(data["error"]["message"], "malformed attestation payload")
+
+    def test_malformed_payload_does_not_echo_input(self):
+        sensitive_string = "SENSITIVE_SECRET_12345"
+        bad_attestation = dict(self.encoded_attestation)
+        bad_attestation["captureNonce"] = sensitive_string
+        res = self.client.post(
+            "/api/capture-attestation/verify",
+            json={"attestation": bad_attestation, "evidence_digest": self.evidence_digest},
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertNotIn(sensitive_string, res.get_data(as_text=True))
+
+
 if __name__ == "__main__":
     unittest.main()
+

@@ -574,41 +574,88 @@ def list_proof_events(
     return rows, next_cursor
 
 
-def find_proof_events_by_video(video_hash: str) -> list[dict[str, Any]]:
+def find_proof_events_by_video(
+    video_hash: str,
+    limit: int = PROOF_EVENTS_DEFAULT_LIMIT,
+    *,
+    cursor_id: int | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
     if not database_url():
-        return []
+        return [], None
+
+    page_size = clamp_proof_events_limit(limit)
+    fetch_size = page_size + 1
 
     with get_connection() as connection:
         with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                select
-                    id,
-                    event_type,
-                    file_name,
-                    video_hash,
-                    metadata_hash,
-                    proof_id,
-                    tier,
-                    embedded_hash,
-                    tx_hash,
-                    tx_status,
-                    source_address,
-                    contract_id,
-                    retention_class,
-                    expires_at,
-                    legal_hold,
-                    metadata,
-                    time_attestation,
-                    claimed_capture_time,
-                    created_at
-                from proof_events
-                where video_hash = %s
-                order by id desc;
-                """,
-                (video_hash,),
-            )
-            return [dict(row) for row in cursor.fetchall()]
+            if cursor_id is None:
+                cursor.execute(
+                    """
+                    select
+                        id,
+                        event_type,
+                        file_name,
+                        video_hash,
+                        metadata_hash,
+                        proof_id,
+                        tier,
+                        embedded_hash,
+                        tx_hash,
+                        tx_status,
+                        source_address,
+                        contract_id,
+                        retention_class,
+                        expires_at,
+                        legal_hold,
+                        metadata,
+                        time_attestation,
+                        claimed_capture_time,
+                        created_at
+                    from proof_events
+                    where video_hash = %s
+                    order by id desc
+                    limit %s;
+                    """,
+                    (video_hash, fetch_size),
+                )
+            else:
+                cursor.execute(
+                    """
+                    select
+                        id,
+                        event_type,
+                        file_name,
+                        video_hash,
+                        metadata_hash,
+                        proof_id,
+                        tier,
+                        embedded_hash,
+                        tx_hash,
+                        tx_status,
+                        source_address,
+                        contract_id,
+                        retention_class,
+                        expires_at,
+                        legal_hold,
+                        metadata,
+                        time_attestation,
+                        claimed_capture_time,
+                        created_at
+                    from proof_events
+                    where video_hash = %s
+                      and id < %s
+                    order by id desc
+                    limit %s;
+                    """,
+                    (video_hash, cursor_id, fetch_size),
+                )
+            rows = [dict(row) for row in cursor.fetchall()]
+
+    next_cursor: str | None = None
+    if len(rows) > page_size:
+        rows = rows[:page_size]
+        next_cursor = encode_proof_events_cursor(int(rows[-1]["id"]))
+    return rows, next_cursor
 
 
 def find_proof_owner(proof_id: str) -> str | None:
@@ -1017,6 +1064,28 @@ def set_legal_hold(proof_id: str, hold: bool) -> None:
         connection.commit()
 
 
+def count_expired_events() -> int:
+    """Return how many proof events ``purge_expired_events`` would delete.
+
+    Read-only; uses the same filter as the purge so retention dry runs match.
+    """
+    if not database_url():
+        return 0
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select count(*) as expired
+                from proof_events
+                where expires_at is not null
+                  and expires_at <= now()
+                  and legal_hold = false;
+                """
+            )
+            row = cursor.fetchone()
+    return int(row["expired"]) if row else 0
+
+
 def purge_expired_events(batch_size: int = RETENTION_BATCH_DEFAULT_SIZE) -> list[dict[str, Any]]:
     """Delete proof events past their expiration that are not on legal hold.
 
@@ -1139,3 +1208,80 @@ def fail_job(job_id: int, error: str, *, is_fatal: bool = False) -> None:
     else:
         job["status"] = "pending"
         job.pop("worker_id", None)
+
+
+def get_job_queue_metrics() -> dict[str, Any]:
+    """Return counts per job type and state plus the age of the oldest queued job.
+
+    Cheap aggregate query grouped by type and status, utilizing the jobs index.
+    Skips gracefully (returns empty data) when no database is configured or
+    when the database query fails.
+
+    Returns:
+        dict with:
+            "counts": {(type, state): count, ...}
+            "oldest_queued_seconds": {type: seconds, ...}
+    """
+    if not database_url():
+        return {"counts": {}, "oldest_queued_seconds": {}}
+
+    try:
+        with get_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        type,
+                        status AS state,
+                        COUNT(*) AS count,
+                        EXTRACT(EPOCH FROM (NOW() - MIN(created_at))) FILTER (WHERE status = 'pending') AS oldest_queued_seconds
+                    FROM jobs
+                    GROUP BY type, status;
+                    """
+                )
+                rows = cursor.fetchall()
+    except Exception as exc:
+        logger.warning("Failed to query job queue metrics: %s", exc)
+        return {"counts": {}, "oldest_queued_seconds": {}}
+
+    counts: dict[tuple[str, str], int] = {}
+    oldest_queued: dict[str, float] = {}
+
+    for row in rows:
+        if isinstance(row, dict):
+            j_type = str(row.get("type", ""))
+            state = str(row.get("state") or row.get("status", ""))
+            cnt = int(row.get("count", 0))
+            oldest_sec = row.get("oldest_queued_seconds")
+        elif hasattr(row, "__getitem__"):
+            try:
+                j_type = str(row["type"])
+                state = str(row["state"] if "state" in row else row["status"])
+                cnt = int(row["count"])
+                oldest_sec = row.get("oldest_queued_seconds") if hasattr(row, "get") else row["oldest_queued_seconds"]
+            except (KeyError, TypeError):
+                j_type = str(row[0])
+                state = str(row[1])
+                cnt = int(row[2])
+                oldest_sec = row[3] if len(row) > 3 else None
+        else:
+            continue
+
+        if not j_type or not state:
+            continue
+
+        counts[(j_type, state)] = cnt
+        if oldest_sec is not None:
+            oldest_queued[j_type] = max(0.0, float(oldest_sec))
+
+    for j_type, _ in counts:
+        if j_type not in oldest_queued:
+            oldest_queued[j_type] = 0.0
+
+    return {
+        "counts": counts,
+        "oldest_queued_seconds": oldest_queued,
+    }
+
+
+get_job_metrics = get_job_queue_metrics

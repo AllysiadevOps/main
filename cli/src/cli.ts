@@ -7,7 +7,7 @@ import process from 'node:process'
 import { StrKey } from '@stellar/stellar-sdk'
 import { createProofManifest, parseManifest, serializeManifest } from './manifest.js'
 import { validateMetadata, fileHash, canonicalMetadataHash, type HarpocratesMetadata } from './metadata.js'
-import { lookupByVideoHash, verifyTransaction } from './stellar-lookup.js'
+import { lookupByVideoHash, verifyTransaction, getLineage, getProofStatus } from './stellar-lookup.js'
 import { createReceipt, formatReceipt, type VerificationReceipt } from './receipt.js'
 import { classifyVerification } from './normalize.js'
 import { verifyVerificationReceipt, decodeReceiptFromQr, type SignedVerificationReceipt } from './signed-receipt.js'
@@ -18,6 +18,7 @@ import {
   serializeC2paExport,
   type C2paExport,
 } from './c2pa.js'
+import { verifyLineageTree, formatLineageTree } from './verify-lineage.js'
 import { logStructured, redactSensitive } from './logging.js'
 import { parseCliArgs, CliUsageError, type ParsedArgs } from './args.js'
 
@@ -90,9 +91,12 @@ async function main(): Promise<void> {
       return await handleVerifyReceipt(flags, debugLog)
     case 'c2pa':
       return await handleC2pa(flags, debugLog)
+    case 'verify-lineage':
+      return await handleVerifyLineage(flags, debugLog)
     case 'help':
-    default:
       return printHelp()
+    default:
+      return printUnknownCommand(command)
   }
 }
 
@@ -375,6 +379,72 @@ async function handleC2pa(flags: Record<string, string>, debugLog: (event: Recor
   }
 }
 
+async function handleVerifyLineage(
+  flags: Record<string, string>,
+  debugLog: (event: Record<string, unknown>) => void,
+): Promise<void> {
+  const outputDigest = flags['output-digest'] || flags.outputDigest
+  const contractId = flags['contract-id'] || flags.contractId
+  const rpcUrl = flags['rpc-url'] || flags.rpcUrl
+  const sourceAddress = flags['source-address'] || flags.sourceAddress || process.env.HARPOCRATES_SOURCE_ADDRESS
+  const network = flags.network || 'Test SDF Network ; September 2015'
+  const outputFormat = flags.output || flags.o || 'text'
+
+  if (!outputDigest) {
+    exit(2, '--output-digest is required for lineage verification')
+  }
+
+  if (!contractId || !StrKey.isValidContract(contractId)) {
+    exit(8, 'a valid --contract-id is required for verification')
+  }
+
+  if (!sourceAddress) {
+    exit(8, 'a source address is required for simulation. Pass --source-address or set HARPOCRATES_SOURCE_ADDRESS')
+  }
+
+  debugLog({
+    action: 'verify-lineage',
+    outputDigest,
+    contractId,
+    network,
+  })
+
+  const fetcher = {
+    getLineage: (digest: string) =>
+      getLineage(contractId, digest, {
+        rpcUrl,
+        networkPassphrase: network,
+        sourceAddress,
+      }),
+    getProofStatus: (proofId: string) =>
+      getProofStatus(contractId, proofId, {
+        rpcUrl,
+        networkPassphrase: network,
+        sourceAddress,
+      }),
+  }
+
+  const result = await verifyLineageTree(outputDigest, fetcher)
+
+  if (outputFormat === 'json') {
+    printJson(result)
+  } else {
+    printText(formatLineageTree(result.root))
+    if (!result.success && result.failureReason) {
+      printText(`\nVerification failed: ${result.failureReason}`)
+    }
+  }
+
+  if (!result.success) {
+    if (result.revokedCount > 0) exit(2, 'an ancestor is revoked')
+    if (result.expiredCount > 0) exit(1, 'an ancestor is expired')
+    if (result.missingCount > 0) exit(3, 'an ancestor is missing')
+    exit(8, result.failureReason ?? 'lineage verification failed')
+  }
+
+  exit(0)
+}
+
 function printHelp(): void {
   const help = `
 Harpocrates CLI – headless verification and proof utilities
@@ -384,11 +454,20 @@ Usage:
 
 Commands:
   verify         Verify a proof against the Stellar network.
+  verify-lineage Verify a derivative's full lineage back to registered originals.
   manifest       Create a proof manifest from metadata.
   hash           Compute the SHA-256 hash of a file.
   verify-receipt Verify an offline signed receipt.
   c2pa           Export C2PA authenticity assertions from a proof manifest.
   help           Show this help message.
+
+Lineage verification options:
+  --output-digest  32-byte hex digest of the derivative (required).
+  --contract-id    Contract ID on Stellar (required).
+  --rpc-url        Stellar RPC URL (default: testnet).
+  --source-address Source address for simulation.
+  --network        Network passphrase (default: testnet).
+  --output, -o     Output format: "text" (default) or "json".
 
 C2PA export options:
   --manifest       Path to a proof manifest JSON file (use "-" for stdin; required).
@@ -435,8 +514,8 @@ Environment variables:
 
 Debugging:
   --debug                      Emit redacted structured diagnostics to stderr.
-                               Sensitive fields (secrets, witnesses, tokens,
-                               credentials) are never logged.
+                                Sensitive fields (secrets, witnesses, tokens,
+                                credentials) are never logged.
 
 Exit codes:
   0   valid
@@ -450,7 +529,14 @@ Exit codes:
   8   error
 `
   printText(help.trim())
+
   process.exit(0)
+}
+
+function printUnknownCommand(name: string): never {
+  process.stderr.write(`harpocrates: unknown command "${name}"\n`)
+  process.stderr.write(helpText() + '\n')
+  process.exit(2)
 }
 
 main().catch((err) => {

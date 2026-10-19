@@ -9,7 +9,7 @@
  * `offlineVerification.ts`.
  *
  * Mobile-hardened: input validation, AbortController cancellation, stale-result
- * guard, and privacy-safe error codes. No raw evidence, media, or secrets are
+ * guard, and privacy-safe error codes. No raw evidence, media, or secrets is
  * written to logs or user-facing errors beyond stable categories.
  */
 
@@ -32,6 +32,7 @@ export type VerificationErrorCode =
   | 'DEPENDENCY_UNAVAILABLE'
   | 'CANCELLED'
   | 'WALLET_UNAVAILABLE'
+  | 'METADATA_ENVELOPE_MISMATCH'
 
 // 100 MB — frontend guard, consistent with batchVerifier DEFAULT_BATCH_CONFIG
 // (100 MB per-file) and within backend MAX_VIDEO_BYTES (250 MB, backend/config.py).
@@ -49,6 +50,8 @@ const SAFE_MESSAGES: Record<VerificationErrorCode, string> = {
   DEPENDENCY_UNAVAILABLE: 'Verification services are unavailable. No trust decision was made.',
   CANCELLED: 'Verification cancelled.',
   WALLET_UNAVAILABLE: 'Wallet unavailable. Connect a wallet or try again without wallet lookup.',
+  METADATA_ENVELOPE_MISMATCH:
+    'Metadata mismatch: the embedded metadata hash does not match the on-chain envelope bound to this proof. Treat this artifact as tampered with.',
 }
 
 function isAbortError(error: unknown): boolean {
@@ -64,10 +67,16 @@ function mapChainStatus(status: number): VerificationErrorCode | null {
   return null
 }
 
+function normaliseHashForCompare(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim().toLowerCase()
+  return trimmed.length > 0 ? trimmed : null
+}
+
 function validateFile(file: File): { ok: true } | { ok: false; code: VerificationErrorCode } {
   if (file.size === 0) return { ok: false, code: 'EMPTY_INPUT' }
   if (file.size > MAX_VERIFY_FILE_BYTES) return { ok: false, code: 'OVERSIZED_ARTIFACT' }
-  // Allow empty type (some mobile browsers omit it) but reject clearly unsupported types
+  // Allow emptty type (some mobile browsers omit it) but reject clearly unsupported types
   if (file.type && !file.type.startsWith('video/')) {
     return { ok: false, code: 'UNSUPPORTED_ARTIFACT' }
   }
@@ -257,6 +266,47 @@ export function useVerification(): UseVerificationReturn {
       }
 
       const hasMetadata = extractResult.hasHarpocratesMetadata
+
+      // Compare the on-chain metadata envelope (if bound) with the extracted
+      // metadata hash. An absent envelope is not an error and preserves the
+      // existing behaviour. A mismatch is a distinct, tamper-signalling error.
+      const proofId = onChain?.proofId ?? onChain ? onChain.prooofId : undefined
+      const envelope = proofId
+        ? await (async () => {
+            try {
+              const { getMetadataEnvelope } = await import('../lib/harpocratesRegistry')
+            return await getMetadataEnvelope(proofId)
+          } catch {
+            // Envelope read failure must not mask a confirmed result; treat as
+            // "no envelope" and let the rest of the flow report as usual.
+            return null
+          }
+        })()
+        : null
+
+      if (seq !== seqRef.current) return
+      if (signal.aborted) {
+        setStatus('cancelled')
+        setErrorCode('CANCELLED')
+        setVerifyResult(SAFE_MESSAGES.CANCELLED)
+        return
+      }
+
+      if (envelope) {
+        const extractedHash = normaliseHashForCompare(extractResult.metadataHash)
+        const envelopeHash = normaliseHashForCompare(envelope.metadataHash)
+        // Only flag a mismatch when we have both sides; a missing extracted
+        // hash falls through to the existing metadata-only messaging.
+        if (extractedHash && envelopeHash && extractedHash !== envelopeHash) {
+          setStatus('error')
+          setErrorCode('METADATA_ENVELOPE_MISMATCH')
+          setVerifyResult(SAFE_MESSAGES.METADATA_ENVELOPE_MISMATCH)
+          setEvents(dbMatches)
+          setChainProof(onChain)
+          return
+        }
+      }
+
       // Privacy-safe, stable user messages — no file names, hashes, or raw proof data
       if (hasMetadata && dbMatches.length > 0 && onChain) {
         setVerifyResult(
@@ -296,139 +346,65 @@ export function useVerification(): UseVerificationReturn {
         // Prefer actionable API message for oversized/unsupported/invalid; else stable copy.
         const apiMessage = error instanceof ApiClientError ? error.message : ''
         const useApiMessage =
+          apiMessage.length > 0 &&
           (mapped === 'OVERSIZED_ARTIFACT' ||
             mapped === 'UNSUPPORTED_ARTIFACT' ||
-            mapped === 'INVALID_EVIDENCE') &&
-          apiMessage.length > 0
+            mapped === 'INVALID_EVIDENCE')
         setVerifyResult(useApiMessage ? apiMessage : SAFE_MESSAGES[mapped])
         return
       }
-      const msg = error instanceof Error ? error.message : ''
-      const isWallet = /wallet|freighter|readonly|connect/i.test(msg)
-      const code: VerificationErrorCode = isWallet ? 'WALLET_UNAVAILABLE' : 'DEPENDENCY_UNAVAILABLE'
-      setStatus('error')
-      setErrorCode(code)
-      setVerifyResult(SAFE_MESSAGES[code])
-    }
-  }, [])
-
-  /**
-   * Local-only verification: hash + extract + structural/binding checks.
-   * Never touches verificationService (no stego API, no NeonDB, no RPC), never
-   * queries events or chain state, and never produces a trust confirmation.
-   */
-  const runOfflineVerify = useCallback(async (file: File, seq: number, signal: AbortSignal) => {
-    // Validate synchronously before any expensive work
-    const validated = validateFile(file)
-    if (!validated.ok) {
-      if (seq !== seqRef.current) return
-      setStatus('error')
-      setErrorCode(validated.code)
-      setVerifyResult(SAFE_MESSAGES[validated.code])
-      // keep hash empty so UI does not show stale hash for rejected input
-      return
-    }
-
-    setStatus('hashing')
-    setErrorCode(null)
-    setVerifyResult('Hashing evidence locally…')
-    setChainProof(null)
-    setEvents([])
-
-    let videoHash: string
-    try {
-      const { sha256 } = await import('../utils')
-      // Allow early abort before reading
-      if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
-      const buffer = await file.arrayBuffer()
-      if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
-      videoHash = await sha256(buffer)
-      if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
-      if (seq !== seqRef.current) return
-      setVerifyHash(videoHash)
-    } catch (error) {
-      if (isAbortError(error) || signal.aborted) {
-        if (seq !== seqRef.current) return
-        setStatus('cancelled')
-        setErrorCode('CANCELLED')
-        setVerifyResult(SAFE_MESSAGES.CANCELLED)
-        return
-      }
-      if (seq !== seqRef.current) return
-      setStatus('error')
-      setErrorCode('INVALID_EVIDENCE')
-      setVerifyResult(SAFE_MESSAGES.INVALID_EVIDENCE)
-      return
-    }
-
-    setStatus('verifying')
-    setVerifyResult('Inspecting evidence locally…')
-
-    try {
-      const { verifyOffline } = await import('../offlineVerification')
-      if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
-      const result = await verifyOffline(file, { signal })
-      if (seq !== seqRef.current) return
-
-      if (result.outcome === 'cancelled') {
-        setStatus('cancelled')
-        setErrorCode('CANCELLED')
-        setVerifyResult(result.message)
-        return
-      }
-      if (result.outcome === 'verified-local') {
-        setStatus('success')
-        setErrorCode(null)
-        setVerifyResult(result.message)
-        return
-      }
-      if (result.errorCode) {
+      // Wallet heuristic: a wallet provider failure should not be reported as a
+      // generic verification failure.
+      if (error instanceof Error && /wallet/i.test(error.message)) {
         setStatus('error')
-        setErrorCode(result.errorCode)
-        setVerifyResult(result.message)
+        setErrorCode('WALLET_UNAVAILABLE')
+        setVerifyResult(SAFE_MESSAGES.WALLET_UNAVAILABLE)
         return
       }
       setStatus('error')
       setErrorCode('VERIFICATION_FAILED')
       setVerifyResult(SAFE_MESSAGES.VERIFICATION_FAILED)
-    } catch (error) {
-      if (isAbortError(error) || signal.aborted) {
-        if (seq !== seqRef.current) return
-        setStatus('cancelled')
-        setErrorCode('CANCELLED')
-        setVerifyResult(SAFE_MESSAGES.CANCELLED)
-        return
-      }
-      if (seq !== seqRef.current) return
-      setStatus('error')
-      setErrorCode('DEPENDENCY_UNAVAILABLE')
-      setVerifyResult(SAFE_MESSAGES.DEPENDENCY_UNAVAILABLE)
     }
   }, [])
 
   const verifyEvidence = useCallback(async (file: File | null, walletAddress?: string) => {
-    if (!file) return
-    lastFileRef.current = { file, wallet: walletAddress }
-    // Cancel any in-flight verification and bump sequence to ignore stale results
+    if (!file) {
+      setStatus('error')
+      setErrorCode('EMPTY_INPUT')
+      setVerifyResult(SAFE_MESSAGES.EMPTY_INPUT)
+      return
+    }
+    // Offline mode is a separate code path that never touches the network.
+    if (offlineRef.current) {
+      const { runOfflineVerification } = await import('../offlineVerification')
+      const result = await runOfflineVerification(file)
+      setVerifyHash(result.videoHash)
+      setVerifyResult(result.message)
+      setStatus(result.ok ? 'success' : 'error')
+      setErrorCode(result.ok ? null : result.code)
+      return
+    }
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
-    seqRef.current += 1
-    const seq = seqRef.current
-    setStatus('validating')
-    if (offlineRef.current) {
-      await runOfflineVerify(file, seq, controller.signal)
-    } else {
-      await runVerify(file, walletAddress, seq, controller.signal)
-    }
-  }, [runVerify, runOfflineVerify])
+    const seq = seqRef.current + 1
+    seqRef.current = seq
+    lastFileRef.current = { file, wallet: walletAddress }
+    await runVerify(file, walletAddress, seq, controller.signal)
+  }, [runVerify])
 
   const retry = useCallback(async () => {
     const last = lastFileRef.current
     if (!last) return
-    await verifyEvidence(last.file, last.wallet)
-  }, [verifyEvidence])
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+    const seq = seqRef.current + 1
+    seqRef.current = seq
+    await runVerify(last.file, last.wallet, seq, controller.signal)
+  }, [runVerify])
 
+  // Abort any in-flight work on unmount.
   useEffect(() => {
     return () => {
       abortRef.current?.abort()

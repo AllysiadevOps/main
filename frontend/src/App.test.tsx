@@ -240,5 +240,33 @@ describe('App', () => {
     const studio = screen.getByRole('region', { name: /evidence studio workspace/i })
     expect(studio).not.toHaveAttribute('aria-busy')
   })
+
+  describe('release compatibility banner', () => {
+    it('shows nothing when the build configuration is compatible', () => {
+      render(<App />)
+      expect(screen.queryByText(/incompatible release configuration/i)).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /dismiss compatibility banner/i })).not.toBeInTheDocument()
+    })
+
+    it('shows a dismissible banner naming expected vs configured values when incompatible', async () => {
+      vi.stubEnv('VITE_HARPOCRATES_RELEASE_ID', 'harpocrates-2.0.0-beta')
+      vi.stubEnv('VITE_HARPOCRATES_RELEASE_NETWORK', 'mainnet')
+
+      const user = userEvent.setup()
+      render(<App />)
+
+      const banner = screen.getByRole('alert', { name: /incompatible release configuration/i })
+      expect(banner).toBeInTheDocument()
+      expect(screen.getByText('harpocrates-1.0.0')).toBeInTheDocument()
+      expect(screen.getByText('testnet')).toBeInTheDocument()
+      expect(screen.getByText('harpocrates-2.0.0-beta')).toBeInTheDocument()
+      expect(screen.getByText('mainnet')).toBeInTheDocument()
+
+      const dismissButton = screen.getByRole('button', { name: /dismiss compatibility banner/i })
+      await user.click(dismissButton)
+
+      expect(screen.queryByText(/incompatible release configuration:/i)).not.toBeInTheDocument()
+    })
+  })
 })
 

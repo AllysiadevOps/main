@@ -1069,6 +1069,19 @@ def test_directories_without_a_package_file_are_not_circuits(tmp_path: Path):
     assert am.check_coverage(lock, tmp_path) == []
 
 
+def test_library_packages_are_not_treated_as_unpinned_circuits(tmp_path: Path):
+    _package(tmp_path, "real_circuit")
+    lib_dir = tmp_path / "zk" / "noir" / "harpocrates_common"
+    lib_dir.mkdir(parents=True, exist_ok=True)
+    lib_dir.joinpath("Nargo.toml").write_text(
+        '[package]\nname = "harpocrates_common"\ntype = "lib"\n', encoding="utf-8"
+    )
+    lock = _lock_for(tmp_path, [_acir_entry("real_circuit")])
+
+    assert am.discover_circuit_packages(lock, tmp_path) == ["real_circuit"]
+    assert am.check_coverage(lock, tmp_path) == []
+
+
 def test_an_empty_circuit_root_is_not_a_coverage_failure(tmp_path: Path):
     """A repo with no Noir packages is not misreported as a gap."""
     lock = _lock_for(tmp_path, [])

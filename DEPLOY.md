@@ -124,6 +124,11 @@ python devx/generate_api_schema.py --output openapi.json
 
 If a deployment introduces critical failures or regressions, you can orchestrate a privacy-safe rollback using the provided CLI tooling. This rolls back the active containers bounds safely without leaking credentials, media, or breaking backwards compatibility.
 
+```bash
+python devx/deploy.py rollback --manifest-file release/compatibility-manifest.json
+```
+
+Or on PowerShell:
 ```powershell
 .\scripts\rollback.ps1 -ManifestFile .\release\compatibility-manifest.json
 ```

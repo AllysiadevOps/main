@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
+import os
 import threading
-from typing import Dict, List, Tuple
+import time
+from typing import Any, Callable, Dict, List, Tuple
 
+logger = logging.getLogger(__name__)
 
 # Default latency histogram buckets in seconds
 LATENCY_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, float("inf"))
@@ -14,7 +18,7 @@ UPLOAD_SIZE_BUCKETS = (1024, 65536, 1048576, 10485760, 104857600, 262144000, flo
 class MetricsCollector:
     """Thread-safe collector for privacy-safe HTTP service metrics in Prometheus format."""
 
-    def __init__(self) -> None:
+    def __init__(self, job_refresh_interval: float | None = None) -> None:
         self._lock = threading.Lock()
         self._requests_total: Dict[Tuple[str, str, str], int] = {}
         self._latency_histogram: Dict[Tuple[str, str, str], Dict[str, float]] = {}
@@ -28,6 +32,17 @@ class MetricsCollector:
         self._cache_evictions = 0
         self._deleted_events = 0
 
+        # Job queue backlog metrics (refreshed at most every N seconds)
+        self._job_refresh_interval = (
+            float(os.getenv("HARPOCRATES_METRICS_JOB_REFRESH_SECONDS", "15.0"))
+            if job_refresh_interval is None
+            else float(job_refresh_interval)
+        )
+        self._last_job_refresh: float = 0.0
+        self._cached_job_counts: Dict[Tuple[str, str], int] = {}
+        self._cached_oldest_queued: Dict[str, float] = {}
+        self._job_metrics_fn: Callable[[], dict[str, Any]] | None = None
+
     def reset(self) -> None:
         """Reset all metrics to clean state (primarily for unit testing)."""
         with self._lock:
@@ -40,6 +55,84 @@ class MetricsCollector:
             self._cache_misses = 0
             self._cache_evictions = 0
             self._deleted_events = 0
+            self._last_job_refresh = 0.0
+            self._cached_job_counts.clear()
+            self._cached_oldest_queued.clear()
+
+    def set_job_metrics_fn(self, fn: Callable[[], dict[str, Any]] | None) -> None:
+        """Set a custom function to fetch job queue metrics (primarily for unit testing)."""
+        with self._lock:
+            self._job_metrics_fn = fn
+
+    def _fetch_job_metrics(self) -> dict[str, Any]:
+        if self._job_metrics_fn is not None:
+            return self._job_metrics_fn()
+        fn = globals().get("get_job_queue_metrics")
+        if callable(fn) and fn is not _default_get_job_queue_metrics:
+            return fn()
+        try:
+            import db
+            if hasattr(db, "get_job_queue_metrics"):
+                return db.get_job_queue_metrics()
+            if hasattr(db, "get_job_metrics"):
+                return db.get_job_metrics()
+        except Exception as exc:
+            logger.warning("Failed to fetch job queue metrics: %s", exc)
+        return {"counts": {}, "oldest_queued_seconds": {}}
+
+    def _parse_job_metrics(
+        self, data: Any
+    ) -> Tuple[Dict[Tuple[str, str], int], Dict[str, float]]:
+        counts: Dict[Tuple[str, str], int] = {}
+        oldest_queued: Dict[str, float] = {}
+
+        if not data:
+            return counts, oldest_queued
+
+        if isinstance(data, dict):
+            raw_counts = data.get("counts", {})
+            if isinstance(raw_counts, dict):
+                for k, v in raw_counts.items():
+                    if isinstance(k, tuple) and len(k) == 2:
+                        t, s = str(k[0])[:64], str(k[1])[:64]
+                        counts[(t, s)] = int(v)
+                    elif isinstance(k, str) and isinstance(v, dict):
+                        for s_k, s_v in v.items():
+                            counts[(k[:64], str(s_k)[:64])] = int(s_v)
+            elif isinstance(raw_counts, list):
+                for item in raw_counts:
+                    if isinstance(item, dict):
+                        t = str(item.get("type", ""))[:64]
+                        s = str(item.get("state") or item.get("status", ""))[:64]
+                        c = int(item.get("count", 0))
+                        if t and s:
+                            counts[(t, s)] = c
+
+            raw_oldest = data.get("oldest_queued_seconds") or data.get("oldest_queued", {})
+            if isinstance(raw_oldest, dict):
+                for k, v in raw_oldest.items():
+                    if v is not None:
+                        oldest_queued[str(k)[:64]] = max(0.0, float(v))
+            elif isinstance(raw_oldest, list):
+                for item in raw_oldest:
+                    if isinstance(item, dict):
+                        t = str(item.get("type", ""))[:64]
+                        v = item.get("oldest_queued_seconds") or item.get("seconds")
+                        if t and v is not None:
+                            oldest_queued[t] = max(0.0, float(v))
+        elif isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    t = str(item.get("type", ""))[:64]
+                    s = str(item.get("state") or item.get("status", ""))[:64]
+                    c = int(item.get("count", 0))
+                    if t and s:
+                        counts[(t, s)] = c
+                    v = item.get("oldest_queued_seconds")
+                    if t and v is not None:
+                        oldest_queued[t] = max(0.0, float(v))
+
+        return counts, oldest_queued
 
     def record_request(
         self,
@@ -133,7 +226,7 @@ class MetricsCollector:
                     del self._dependency_status[key]
             self._dependency_status[(clean_name, clean_status, critical_label)] = 1
 
-    def generate_prometheus_metrics(self) -> str:
+    def generate_prometheus_metrics(self, force_refresh_jobs: bool = False) -> str:
         """Format metrics into Prometheus text format (version 0.0.4)."""
         lines: List[str] = []
 
@@ -227,6 +320,35 @@ class MetricsCollector:
             lines.append("# TYPE harpocrates_retention_deleted_events_total counter")
             lines.append(f"harpocrates_retention_deleted_events_total {self._deleted_events}")
 
+            # 8. Job queue backlog and oldest-job age gauges (refreshed at most every N seconds)
+            now = time.monotonic()
+            if force_refresh_jobs or (now - self._last_job_refresh >= self._job_refresh_interval):
+                try:
+                    data = self._fetch_job_metrics()
+                    self._cached_job_counts, self._cached_oldest_queued = self._parse_job_metrics(data)
+                    self._last_job_refresh = now
+                except Exception as exc:
+                    logger.warning("Failed to refresh job queue metrics: %s", exc)
+
+            if self._cached_job_counts:
+                lines.append("")
+                lines.append("# HELP harpocrates_jobs Number of jobs by type and state.")
+                lines.append("# TYPE harpocrates_jobs gauge")
+                for (job_type, state), count in sorted(self._cached_job_counts.items()):
+                    lines.append(
+                        f'harpocrates_jobs{{type="{_escape_label(job_type)}",'
+                        f'state="{_escape_label(state)}"}} {count}'
+                    )
+
+            if self._cached_oldest_queued:
+                lines.append("")
+                lines.append("# HELP harpocrates_job_oldest_queued_seconds Age of oldest queued job in seconds by type.")
+                lines.append("# TYPE harpocrates_job_oldest_queued_seconds gauge")
+                for job_type, seconds in sorted(self._cached_oldest_queued.items()):
+                    lines.append(
+                        f'harpocrates_job_oldest_queued_seconds{{type="{_escape_label(job_type)}"}} {_format_float(seconds)}'
+                    )
+
         lines.append("")
         return "\n".join(lines)
 
@@ -242,6 +364,21 @@ def _format_float(val: float) -> str:
         return str(int(val))
     return f"{val:.6g}"
 
+
+def _default_get_job_queue_metrics() -> dict[str, Any]:
+    try:
+        import db
+        if hasattr(db, "get_job_queue_metrics"):
+            return db.get_job_queue_metrics()
+        if hasattr(db, "get_job_metrics"):
+            return db.get_job_metrics()
+    except Exception:
+        pass
+    return {"counts": {}, "oldest_queued_seconds": {}}
+
+
+get_job_queue_metrics = _default_get_job_queue_metrics
+get_job_metrics = get_job_queue_metrics
 
 # Global singleton instance
 collector = MetricsCollector()

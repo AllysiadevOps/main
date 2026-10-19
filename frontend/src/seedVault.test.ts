@@ -1,7 +1,12 @@
 import { describe, it, expect, vi } from 'vitest'
 import { fieldSecret, hasSeeds, deriveSeeds, createClearSeeds } from './seedVault'
+import { fieldSecret as utilsFieldSecret } from './utils'
 
 describe('fieldSecret', () => {
+  it('is the single canonical implementation re-exported from utils', () => {
+    expect(fieldSecret).toBe(utilsFieldSecret)
+  })
+
   it('returns a deterministic decimal string for a given label and seed', async () => {
     const a = await fieldSecret('credential', 'my-secret')
     const b = await fieldSecret('credential', 'my-secret')

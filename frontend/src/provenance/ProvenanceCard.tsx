@@ -144,9 +144,13 @@ export default function ProvenanceCard({ provenance }: ProvenanceCardProps) {
         <div>
           <dt>Contract link</dt>
           <dd>
-            <a href={provenance.links.contract} target="_blank" rel="noreferrer" title={provenance.verifier.contractId}>
-              Open contract explorer
-            </a>
+            {provenance.links.contract ? (
+              <a href={provenance.links.contract} target="_blank" rel="noreferrer" title={provenance.verifier.contractId}>
+                Open contract explorer
+              </a>
+            ) : (
+              'Not available'
+            )}
           </dd>
         </div>
       </dl>

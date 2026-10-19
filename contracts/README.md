@@ -366,6 +366,12 @@ that older artifact does not enforce disjoint roles and can grant the admin an
 issuer record again. Re-upgrade and revoke that issuer record before resuming
 issuer operations.
 
+## Timelocked Administration
+
+High-impact registry administrative actions (such as setting the primary verifier, revoking an issuer, setting proof TTL, and revoking credential roots) can be governed through a timelock mechanism to ensure transparency and community notice before execution. The workflow supports advance notice, admin cancellation, open execution after delay expiry, and admin emergency execution when immediate remediation is required.
+
+See [TIMELOCK.md](TIMELOCK.md) for action kinds, payload and target semantics, delays, cancellation and emergency rules, error codes, and events.
+
 ## Emergency Pause
 
 Registration can be paused per identity tier without affecting reads or

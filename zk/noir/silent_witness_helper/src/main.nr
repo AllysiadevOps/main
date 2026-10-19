@@ -1,13 +1,10 @@
-// ---------------------------------------------------------------------------
-// Canonical evidence digest algorithm identifier.
-// Must match the constant in the silent_witness main circuit.
-// ---------------------------------------------------------------------------
-global DIGEST_ALGORITHM_SHA256: Field = 0;
-global SCOPED_NULLIFIER_V1: Field = 0x00484152504f4352415445535f53434f5045445f4e554c4c49464945525f5631;
-
-global DOMAIN_PROTOCOL_FIELD: Field = 0x261e9f6e39e3c1ae6aca9f29e84c10d59c82d5f4b40c21c1b7e3c01ad571c201;
-global DOMAIN_VERSION_FIELD: Field = 0x0c89eff4ec8e39a01e9f19547a0cc9dd7fd2a97d79ba4d94fd32e97a1f5ac623;
-global DOMAIN_NETWORK_FIELD: Field = 0x2a2c3f48ce2e3c2f1e6c89b18d64b5f5c1f88a59a0d9bc82cb61a1e8cb77a50f;
+use harpocrates_common::{
+    DIGEST_ALGORITHM_SHA256,
+    DOMAIN_NETWORK_FIELD,
+    DOMAIN_PROTOCOL_FIELD,
+    DOMAIN_VERSION_FIELD,
+    SCOPED_NULLIFIER_V1,
+};
 
 fn main(
     credential_secret: Field,

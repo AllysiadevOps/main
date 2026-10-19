@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Wallet } from 'lucide-react'
+import { Wallet, X } from 'lucide-react'
 import EvilEye from './components/EvilEye'
 import BatchVerificationWorkspace from './components/BatchVerificationWorkspace'
 import { LandingView } from './views/LandingView'
@@ -15,6 +15,7 @@ import { createProofManifest } from './proofManifest'
 import { CONTRACT_NETWORK_PASSPHRASE } from './stellar'
 import { buildProvenanceRecord } from './provenance/provenanceModel'
 import { parseVerificationShareLink, type VerificationSharePayload } from './verificationShareLink'
+import { checkReleaseCompatibility, type ReleaseCompatibilityResult } from './releaseCompatibility'
 import './App.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5050'
@@ -44,6 +45,8 @@ function App() {
   const [currentView, setCurrentView] = useState<AppView>(initialView)
   const [sharePayload] = useState<VerificationSharePayload | null>(initialSharePayload)
   const [isScrolled, setIsScrolled] = useState(false)
+  const [releaseCompatibility] = useState<ReleaseCompatibilityResult>(() => checkReleaseCompatibility())
+  const [releaseCompatibilityDismissed, setReleaseCompatibilityDismissed] = useState(false)
 
   const { wallet, networkMismatch: walletNetworkMismatch, connectWallet } = useWallet()
   const evidence = useEvidence()
@@ -206,6 +209,34 @@ function App() {
           >
             <span className="network-mismatch-icon" aria-hidden="true">⚠</span>
             <span>{walletNetworkMismatch}</span>
+          </div>
+        ) : null}
+
+        {!releaseCompatibility.compatible && !releaseCompatibilityDismissed ? (
+          <div
+            id="release-compatibility-banner"
+            className="network-mismatch-banner network-mismatch-banner--global release-compatibility-banner"
+            role="alert"
+            aria-live="assertive"
+            aria-atomic="true"
+            aria-label="Incompatible release configuration"
+          >
+            <span className="network-mismatch-icon" aria-hidden="true">⚠</span>
+            <div className="release-compatibility-banner__content">
+              <strong>Incompatible Release Configuration:</strong> Expected release{' '}
+              <code>{releaseCompatibility.expectedReleaseId}</code> on network{' '}
+              <code>{releaseCompatibility.expectedNetwork}</code>, but configured with release{' '}
+              <code>{releaseCompatibility.configuredReleaseId}</code> on network{' '}
+              <code>{releaseCompatibility.configuredNetwork}</code>.
+            </div>
+            <button
+              type="button"
+              className="release-compatibility-banner__dismiss"
+              onClick={() => setReleaseCompatibilityDismissed(true)}
+              aria-label="Dismiss compatibility banner"
+            >
+              <X size={16} aria-hidden="true" />
+            </button>
           </div>
         ) : null}
 

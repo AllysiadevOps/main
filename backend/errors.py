@@ -53,6 +53,7 @@ logger = logging.getLogger(__name__)
 VALIDATION_ERROR = "VALIDATION_ERROR"
 MALFORMED_INPUT = "MALFORMED_INPUT"
 OVERSIZED_INPUT = "OVERSIZED_INPUT"
+UNSUPPORTED_INPUT = "UNSUPPORTED_INPUT"
 classify_cli_error = lambda x: x
 """Legacy client-validation code retained for compatibility (400)."""
 
@@ -61,6 +62,9 @@ PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
 
 NOT_FOUND = "NOT_FOUND"
 """The requested resource or capability is unavailable (404)."""
+
+GONE = "GONE"
+"""The requested resource has been purged and is no longer available (410)."""
 
 INTERNAL_ERROR = "INTERNAL_ERROR"
 """An unexpected server-side failure occurred (500)."""
@@ -95,6 +99,7 @@ def error_response(
     message: str,
     status: int,
     field: str | None = None,
+    cli_code: str | None = None,
 ) -> tuple[Response, int]:
     """Return a Flask response tuple for a standardized error envelope.
 

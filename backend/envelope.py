@@ -76,7 +76,9 @@ def _validate_timestamp(value: Any) -> None:
         )
 
 
-def validate_v1(metadata: dict[str, Any]) -> None:
+def _validate_base_fields(metadata: dict[str, Any]) -> None:
+    if not isinstance(metadata, dict):
+        raise MetadataError(METADATA_MALFORMED, "metadata must be a JSON object")
     required = {"protocol", "version", "tier", "sourceHash", "proofId", "timestamp"}
     missing = required - set(metadata.keys())
     if missing:
@@ -113,6 +115,17 @@ def validate_v1(metadata: dict[str, Any]) -> None:
     _validate_timestamp(metadata.get("timestamp"))
 
 
+def validate_v1(metadata: dict[str, Any]) -> None:
+    _validate_base_fields(metadata)
+    version = metadata.get("version")
+    if type(version) is not int or version != 1:
+        raise MetadataError(
+            METADATA_INVALID_FIELD,
+            "metadata version must be 1",
+            field="version",
+        )
+
+
 def validate_v2(metadata: dict[str, Any]) -> dict[str, Any]:
     # v2 enforces similar constraints but allows forward compatibility (stripping unknown fields or maintaining them)
     # Actually, to make it canonical and safe, we can enforce strict schema or pass through.
@@ -121,10 +134,17 @@ def validate_v2(metadata: dict[str, Any]) -> dict[str, Any]:
         raise MetadataError(METADATA_MALFORMED, "metadata must be a JSON object")
     
     # Require same base fields
-    validate_v1(metadata)
+    _validate_base_fields(metadata)
     
     # version in V2 must be >= 2
-    if metadata.get("version", 1) < 2:
+    version = metadata.get("version", 1)
+    if type(version) is not int:
+        raise MetadataError(
+            METADATA_INVALID_FIELD,
+            "metadata version must be an integer",
+            field="version",
+        )
+    if version < 2:
         # Auto-upgrade the version field if it's migrating
         metadata["version"] = 2
         
@@ -195,6 +215,9 @@ def _decompress_metadata(body: bytes) -> bytes | None:
 
 
 def unpack_envelope(data: bytes) -> dict[str, Any] | None:
+    if not isinstance(data, (bytes, bytearray)):
+        return None
+
     if len(data) < 7 + 4 + 32:
         return None
 
@@ -233,13 +256,9 @@ def unpack_envelope(data: bytes) -> dict[str, Any] | None:
         # Validate based on the magic bytes to ensure safety
         if magic == MAGIC_V1:
             validate_v1(value)
-            # Auto-migrate v1 to v2 representation in-memory?
-            # Issue says: "preserve... unless versioned migration is included."
-            # We can upgrade it on extraction so the rest of the system deals with V2 shape if needed, 
-            # or just leave it as is. We'll just leave it and let the system handle it.
         elif magic == MAGIC_V2:
             value = validate_v2(value)
-    except ValueError:
+    except (ValueError, TypeError):
         return None
 
     return value

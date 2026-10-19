@@ -209,6 +209,48 @@ fn set_guardian_non_admin_rejected() {
     client.set_guardian(&guardian, &new_guardian);
 }
 
+#[test]
+fn clear_guardian_admin_succeeds() {
+    let (env, contract_id, admin, guardian, _) = setup(1_000);
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    assert_eq!(client.get_guardian(), Some(guardian));
+
+    client.clear_guardian(&admin);
+    assert_eq!(client.get_guardian(), None);
+
+    let events = env.events().all();
+    assert_eq!(events.events().len(), 1);
+
+    // Admin can still pause after guardian is cleared.
+    client.pause(&admin, &PAUSE_DOMAIN_TIER1_REGISTRATION, &3600u64);
+    assert!(client.is_paused(&PAUSE_DOMAIN_TIER1_REGISTRATION));
+
+    // Admin can still unpause after guardian is cleared.
+    client.unpause(&admin, &PAUSE_DOMAIN_TIER1_REGISTRATION);
+    assert!(!client.is_paused(&PAUSE_DOMAIN_TIER1_REGISTRATION));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn pause_guardian_after_clear_rejected() {
+    let (env, contract_id, admin, guardian, _) = setup(1_000);
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    client.clear_guardian(&admin);
+    assert_eq!(client.get_guardian(), None);
+
+    // Former guardian cannot pause once cleared.
+    client.pause(&guardian, &PAUSE_DOMAIN_TIER1_REGISTRATION, &3600u64);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn clear_guardian_non_admin_rejected() {
+    let (env, contract_id, _, guardian, _) = setup(1_000);
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    client.clear_guardian(&guardian);
+}
+
 // ---------------------------------------------------------------------------
 // Bounded duration
 // ---------------------------------------------------------------------------

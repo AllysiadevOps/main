@@ -238,3 +238,120 @@ nullifier
 Stellar's official privacy docs currently highlight deployable Groth16 verifier examples, while Noir/UltraHonk-on-Soroban is an emerging path. Harpocrates keeps the UltraHonk verifier isolated behind a small contract interface so the registry API can stay stable.
 
 See `contracts/VERIFIER_INTEGRATION.md` for the remaining on-chain verifier deployment step.
+
+## Troubleshooting
+
+Version skew between `nargo`, `bb`, and the frontend packages (`@noir-lang/noir_js`, `@aztec/bb.js`) or path/environment discrepancies across WSL and Windows can cause cryptic build and verification failures.
+
+Always check installed versions against the single source of truth pinned in [`zk/toolchain.lock.json`](../toolchain.lock.json):
+
+```bash
+# In WSL or Linux: inspect pinned versions in the lock file
+jq '.toolchain' zk/toolchain.lock.json
+
+# Check currently installed CLI versions
+nargo --version
+bb --version
+
+# Run the WSL toolchain validation script
+bash zk/noir/scripts/check-toolchain-wsl.sh
+```
+
+To install or sync toolchain binaries to the versions declared in `zk/toolchain.lock.json`:
+
+```bash
+# Read and install the pinned versions directly from the lock file
+noirup -v $(jq -r '.toolchain.nargo.version' zk/toolchain.lock.json)
+bbup -v $(jq -r '.toolchain.barretenberg.version' zk/toolchain.lock.json)
+```
+
+In the frontend, verify that `frontend/package.json` dependencies match the pinned versions:
+- `@noir-lang/noir_js` must match `.toolchain.nargo.version`
+- `@aztec/bb.js` must match `.toolchain.barretenberg.version`
+
+### Common Errors and Fixes
+
+#### 1. Unsupported ACIR Version / Bytecode Serialization Error
+
+- **Error message:**
+  ```text
+  Error: Unsupported ACIR version: expected <= 0.X.Y, got 0.A.B
+  # or
+  Failed to deserialize circuit: Opcode Not Supported / ACIR version mismatch
+  ```
+- **Cause:** The circuit bytecode was compiled using a version of `nargo` whose ACIR format is newer or incompatible with the version expected by `@aztec/bb.js`, `@noir-lang/noir_js`, or the installed `bb` binary.
+- **Fix:**
+  1. Inspect the pinned versions in [`zk/toolchain.lock.json`](../toolchain.lock.json) under `.toolchain.nargo.version` and `.toolchain.barretenberg.version`.
+  2. Reinstall matching CLI versions:
+     ```bash
+     noirup -v $(jq -r '.toolchain.nargo.version' zk/toolchain.lock.json)
+     bbup -v $(jq -r '.toolchain.barretenberg.version' zk/toolchain.lock.json)
+     ```
+  3. Ensure `frontend/package.json` pins `@noir-lang/noir_js` and `@aztec/bb.js` to the exact versions declared in the lock file, then recompile circuits and re-test:
+     ```bash
+     cd zk/noir/silent_witness && nargo compile
+     cd ../../../frontend && npm install
+     ```
+
+#### 2. Verification Key or Proof Mismatch (`bb verify` failure)
+
+- **Error message:**
+  ```text
+  Verification failed: proof does not match verification key
+  # or
+  Public inputs do not match proof transcript
+  ```
+- **Cause:** Circuit bytecode was recompiled without updating the corresponding verification key (`vk`), proof, or public inputs, or proof artifacts were generated with different scheme/oracle flags than verification expects.
+- **Fix:**
+  1. Verify flags match the configuration in `zk/toolchain.lock.json` (`--scheme ultra_honk --oracle_hash keccak`).
+  2. Regenerate both the verification key and proof together against the latest bytecode:
+     ```bash
+     cd zk/noir/silent_witness
+     nargo check
+     nargo execute witness
+     bb prove --scheme ultra_honk --oracle_hash keccak --bytecode_path ./target/silent_witness.json --witness_path ./target/witness.gz --output_path ./target --output_format bytes_and_fields
+     bb write_vk --scheme ultra_honk --oracle_hash keccak --bytecode_path ./target/silent_witness.json --output_path ./target --output_format bytes_and_fields
+     bb verify --scheme ultra_honk --oracle_hash keccak --vk_path ./target/vk --proof_path ./target/proof --public_inputs_path ./target/public_inputs
+     ```
+
+#### 3. Toolchain Version Drift Gate Failure (`reproducible-build.sh`)
+
+- **Error message:**
+  ```text
+  {"event":"build.error","detail":"nargo version drift: expected 1.0.0-beta.9, found ..."}
+  # or
+  {"event":"build.error","detail":"bb version drift: expected 0.87.0, found ..."}
+  ```
+- **Cause:** `zk/noir/scripts/reproducible-build.sh` enforces strict version parity against `zk/toolchain.lock.json`. Your host environment is executing an unpinned `nargo` or `bb` version.
+- **Fix:**
+  1. Install the pinned version targets dynamically referenced from the lock file:
+     ```bash
+     noirup -v $(jq -r '.toolchain.nargo.version' zk/toolchain.lock.json)
+     bbup -v $(jq -r '.toolchain.barretenberg.version' zk/toolchain.lock.json)
+     ```
+  2. Ensure your `PATH` points to the active installation directories (typically `~/.nargo/bin` and `~/.bb`).
+  3. Re-run `bash zk/noir/scripts/check-toolchain-wsl.sh` to confirm the active versions before re-running the build.
+
+#### 4. WSL Path Translation or Not Installed Error (Windows)
+
+- **Error message:**
+  ```powershell
+  Expected a Windows absolute path, got ...
+  # or
+  wsl: The term 'wsl' is not recognized
+  # or
+  /bin/bash: line 1: /mnt/c/...: No such file or directory
+  ```
+- **Cause:**
+  - Running PowerShell helper scripts (`build-silent-witness-wsl.ps1`, `generate-silent-witness-wsl.ps1`) outside a standard Windows drive mount (e.g. UNC path), or
+  - WSL is not installed or the default distribution is missing, or
+  - Windows CRLF line endings in shell scripts executed inside WSL.
+- **Fix:**
+  1. Ensure WSL is installed with a Linux distribution (e.g. `wsl --install -d Ubuntu`).
+  2. Run PowerShell from a local drive path (e.g. `C:\...`).
+  3. Ensure repository shell scripts use Linux LF line endings (`git config core.autocrlf input`).
+  4. Ensure execution permissions inside WSL:
+     ```bash
+     chmod +x zk/noir/scripts/*.sh
+     ```
+

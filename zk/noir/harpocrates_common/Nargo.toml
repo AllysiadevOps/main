@@ -1,0 +1,7 @@
+[package]
+name = "harpocrates_common"
+type = "lib"
+authors = ["Harpocrates"]
+compiler_version = ">=1.0.0"
+
+[dependencies]

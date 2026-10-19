@@ -30,6 +30,7 @@ emit no event.
 | Constant | Value | Meaning |
 | --- | --- | --- |
 | `MAX_OPEN_DISPUTES_PER_PROOF` | `4` | Cap on simultaneous non-terminal disputes per proof. |
+| `MAX_OPEN_DISPUTES_PER_REPORTER` | `5` | Cap on simultaneous non-terminal disputes opened by one reporter address across all proofs. |
 | `REPORTER_COOLDOWN_SECS` | `86400` | Minimum interval between two disputes by the same `reporter_hash` on the same proof. |
 | `RESPOND_DEADLINE_SECS` | `604800` | Window for the issuer/source to respond. |
 | `RESOLVE_DEADLINE_SECS` | `1209600` | Window for the admin to resolve after a response. |
@@ -46,11 +47,15 @@ dismiss_dispute(admin, dispute_id) -> DisputeRecord
 supersede_dispute(admin, dispute_id, superseding_proof_id) -> DisputeRecord
 get_dispute(dispute_id) -> Option<DisputeRecord>
 get_open_dispute_count(proof_id) -> u32
+get_reporter_open_dispute_count(reporter) -> u32
 ```
 
 * `open_dispute` requires the reporter's own authorization. `dispute_id` must
-  be fresh, the proof must exist, the open-dispute cap must not be exceeded,
-  and the reporter must not be on cooldown.
+  be fresh, the proof must exist, the per-proof open-dispute cap must not be
+  exceeded, the reporter must hold fewer than `MAX_OPEN_DISPUTES_PER_REPORTER`
+  open disputes, and the reporter must not be on cooldown.
+* `resolve_dispute`, `dismiss_dispute`, and `supersede_dispute` release one
+  slot of both the per-proof and the per-reporter counters.
 * `respond_dispute` is authorized for the proof's issuer (Tier 3) or source
   (Tier 2); for Tier 1 anonymous proofs only the admin may respond.
 * `resolve_dispute`, `dismiss_dispute`, and `supersede_dispute` are admin-only.
@@ -69,6 +74,7 @@ Existing dispute codes keep their values. New ones were appended:
 | `65` | `UnauthorizedResponder` | Caller is neither the proof's issuer/source nor admin. |
 | `66` | `ReporterOnCooldown` | Same `reporter_hash` re-reporting within the cooldown. |
 | `67` | `InvalidDisputeTransition` | State does not permit the requested transition. |
+| `88` | `ReporterDisputesSaturated` | Reporter already holds `MAX_OPEN_DISPUTES_PER_REPORTER` open disputes. |
 
 Duplicate `dispute_id` reuses the existing `DuplicateProof` (`4`) code.
 
@@ -76,9 +82,14 @@ Duplicate `dispute_id` reuses the existing `DuplicateProof` (`4`) code.
 
 ## 3. Privacy Properties
 
-* The reporter's address is **never** stored in contract state. Callers supply
-  a 32-byte `reporter_hash = H(reporter_address || proof_id)` commitment; the
-  cooldown is keyed by that commitment.
+* Callers supply a 32-byte `reporter_hash = H(reporter_address || proof_id)`
+  commitment; the per-proof cooldown is keyed by that commitment and it is
+  the only reporter identifier emitted in events.
+* To enforce `MAX_OPEN_DISPUTES_PER_REPORTER`, the authenticated reporter
+  address is stored on `DisputeRecord.reporter` and as the
+  `ReporterOpenDisputeCount(reporter)` key, so a terminal transition can
+  release the right slot. The address already appears in the transaction's
+  authorization entries, so this does not reveal anything new on-chain.
 * Dispute events carry only commitments, enums, IDs, and epoch-second
   timestamps. No media, proof bytes, witnesses, raw metadata, or private keys
   are written or emitted.
@@ -111,6 +122,7 @@ All dispute state is new, additive persistent storage:
 ```text
 Dispute(dispute_id)              -> DisputeRecord
 ProofOpenDisputeCount(proof_id)  -> u32
+ReporterOpenDisputeCount(reporter) -> u32
 ReporterCooldown(reporter_hash)  -> u64
 Lineage(output_digest)           -> LineageRecord   (restored lineage key)
 ```

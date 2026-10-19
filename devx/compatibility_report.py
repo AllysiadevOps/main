@@ -32,10 +32,14 @@ PROOF_SYSTEM_ALIASES = {
 }
 # Match concrete secret-bearing field names only (avoid flagging
 # privacy metadata such as ``includes_private_material``).
-SENSITIVE_KEY_RE = re.compile(
-    r"^(password|secret|private[_-]?key|witness|nullifier|credential|"
-    r"proof_bytes|mnemonic|api[_-]?token|access[_-]?token|refresh[_-]?token)$",
-    re.I,
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from devx._io import (
+    DEFAULT_SENSITIVE_KEY_RE as SENSITIVE_KEY_RE,
+    read_json_bounded as _io_read_json_bounded,
+    read_text_bounded as _io_read_text_bounded,
+    reject_sensitive_keys as _reject_sensitive_keys,
 )
 
 
@@ -63,39 +67,23 @@ def _display_path(path: Path) -> str:
 
 
 def read_text_bounded(path: Path, limit: int = MAX_SOURCE_BYTES) -> str:
-    try:
-        size = path.stat().st_size
-    except OSError as exc:
-        raise ReportError(f"cannot read {_display_path(path)}: {exc}") from exc
-    if size > limit:
-        raise ReportError(f"{_display_path(path)} exceeds the {limit} byte limit")
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise ReportError(f"cannot read {_display_path(path)}: {exc}") from exc
+    return _io_read_text_bounded(
+        path,
+        limit=limit,
+        error_factory=ReportError,
+        display_name=_display_path(path),
+    )
 
 
 def read_json_bounded(path: Path, limit: int = MAX_MANIFEST_BYTES) -> dict[str, Any]:
-    raw = read_text_bounded(path, limit)
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ReportError(f"malformed JSON in {_display_path(path)}: {exc}") from exc
-    if not isinstance(value, dict):
-        raise ReportError(f"{_display_path(path)} must be a JSON object")
-    _reject_sensitive_keys(value, _display_path(path))
-    return value
-
-
-def _reject_sensitive_keys(value: Any, location: str) -> None:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            if SENSITIVE_KEY_RE.search(str(key)):
-                raise ReportError(f"{location} contains forbidden sensitive field '{key}'")
-            _reject_sensitive_keys(child, f"{location}.{key}")
-    elif isinstance(value, list):
-        for index, child in enumerate(value):
-            _reject_sensitive_keys(child, f"{location}[{index}]")
+    return _io_read_json_bounded(
+        path,
+        limit=limit,
+        error_factory=ReportError,
+        display_name=_display_path(path),
+        sensitive_pattern=SENSITIVE_KEY_RE,
+        require_dict=True,
+    )
 
 
 def _check(check_id: str, ok: bool, detail: str = "") -> dict[str, Any]:

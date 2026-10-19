@@ -1,13 +1,14 @@
 /**
  * verificationService — network calls for the verification portal flow.
  *
- * Responsibility: talk to the Flask extract API, NeonDB lookup, and the
+ * Responsibility: talk to the Flask extract API, NeonDB Lookup, and the
  * Soroban on-chain registry. Returns plain data; no React state.
  */
 
 import type { ChainProofRecord } from '../stellarTypes'
 import type { ProofEvent } from '../types'
 import { ApiClientError, parseActionableApiError } from './apiError'
+import { assertValidVideoHash } from './videoHash'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5050'
 const CONTRACT_ID = import.meta.env.VITE_HARPOCRATES_REGISTRY_ID ?? ''
@@ -37,7 +38,9 @@ export async function extractMetadata(file: File, signal?: AbortSignal): Promise
 
 /** Look up all NeonDB proof events for a given video hash. */
 export async function fetchProofEventsByVideo(videoHash: string, signal?: AbortSignal): Promise<ProofEvent[]> {
-  const response = await fetch(`${API_BASE}/api/proofs/by-video/${videoHash}`, { signal })
+  // Validate before building the URL so malformed hashes never reach the network.
+  const safeHash = assertValidVideoHash(videoHash)
+  const response = await fetch(`${API_BASE}/api/proofs/by-video/${safeHash}`, { signal })
   if (!response.ok) {
     throw new ApiClientError(await parseActionableApiError(response, 'Database lookup failed.'))
   }
@@ -54,8 +57,9 @@ export async function getOnChainProof(
   sourceAddress?: string,
 ): Promise<ChainProofRecord | null> {
   if (!CONTRACT_ID) return null
+  const safeHash = assertValidVideoHash(videoHash)
   const { getProofByVideoHash } = await import('../stellar')
-  return getProofByVideoHash(CONTRACT_ID, videoHash, sourceAddress)
+  return getProofByVideoHash(CONTRACT_ID, safeHash, sourceAddress)
 }
 
 export const VERIFICATION_LIMITS = {

@@ -5,16 +5,19 @@ const EXPLORER_BASE: Record<StellarNetwork, string> = {
   public: 'https://stellar.expert/explorer/public',
 }
 
+const PUBLIC_PASSPHRASE = 'Public Global Stellar Network ; February 2016'
+const TESTNET_PASSPHRASE = 'Test Stellar Network ; September 2015'
+
 /**
  * Map a network passphrase to the stellar.expert network segment.
- * Falls back to 'testnet' for unrecognized passphrases rather than
- * throwing, since explorer links are a convenience, not a correctness
- * boundary — an unrecognized passphrase should never block rendering
- * the rest of the provenance panel.
+ * Returns null for unrecognized passphrases (Futurenet, local standalone,
+ * garbage) so callers can hide explorer links instead of linking to a
+ * broken testnet explorer page.
  */
-export function networkFromPassphrase(passphrase: string): StellarNetwork {
-  if (passphrase.toLowerCase().includes('public')) return 'public'
-  return 'testnet'
+export function networkFromPassphrase(passphrase: string): StellarNetwork | null {
+  if (passphrase === PUBLIC_PASSPHRASE) return 'public'
+  if (passphrase === TESTNET_PASSPHRASE) return 'testnet'
+  return null
 }
 
 export function transactionExplorerUrl(network: StellarNetwork, txHash: string): string {

@@ -7,6 +7,22 @@ from dataclasses import dataclass
 class TxVerificationResult:
     status: str = ""
     reason: str = ""
+    ledger: int | None = None
+    latest_ledger: int | None = None
+    confirmations: int | None = None
+    successful: bool | None = None
+    source: str | None = None
+
+
+def normalize_tx_hash(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("txHash must be a string")
+    normalized = value.strip().lower()
+    if normalized.startswith("0x"):
+        normalized = normalized[2:]
+    if len(normalized) != 64 or not all(c in "0123456789abcdef" for c in normalized):
+        raise ValueError("txHash must be a 32-byte hex string")
+    return normalized
 
 
 import json
@@ -39,11 +55,38 @@ TERMINAL_STATUSES = frozenset({"confirmed", "failed", "missing"})
 ALLOWED_STATUSES = frozenset({"pending", "confirmed", "failed", "missing", "error"})
 
 
+def horizon_urls() -> tuple[str, ...]:
+    urls = os.getenv("HORIZON_URLS")
+    if urls:
+        return tuple(u.strip() for u in urls.split(",") if u.strip())
+    return _DEFAULT_RPC_URLS
+
+
+def _short_hash(tx_hash: str) -> str:
+    return tx_hash[:8] if len(tx_hash) >= 8 else tx_hash
+
+
+def _fetch_json(url: str, timeout: float = 10.0) -> tuple[int, dict | None]:
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        return e.code, None
+
+
+def _latest_ledger(rpc_url: str, timeout: float = 10.0) -> int | None:
+    status, data = _fetch_json(f"{rpc_url}/fee_stats", timeout=timeout)
+    if status == 200 and data:
+        return int(data.get("last_ledger", 0)) or None
+    return None
+
+
 @traced(
     "stellar.horizon.verify_transaction",
     attributes={"rpc.system": "stellar", "peer.service": "stellar-horizon"},
 )
-def verify_transaction_status(
+def verify_transaction(
     tx_hash: str,
     *,
     min_confirmations: int = 1,

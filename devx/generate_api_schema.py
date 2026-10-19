@@ -2,9 +2,54 @@ import sys
 import json
 import ast
 import argparse
+import re
 from pathlib import Path
 
 def extract_routes_from_ast(app_path: Path):
+    routes = []
+    tree = ast.parse(app_path.read_text(encoding="utf-8"))
+    
+    for node in ast.walk(tree):
+        # Handle module-level route registrations via decorators on functions
+        # and also detect path parameters like <output_digest>.
+        if isinstance(node, ast.FunctionDef):
+            for decorator in node.decorator_list:
+                # Handle @app.get("/path"), @app.post("/path"), @app.put("/path")
+                if isinstance(decorator, ast.Call) and isinstance(decorator.func, ast.Attribute):
+                    if isinstance(decorator.func.value, ast.Name) and decorator.func.value.id == "app":
+                        method = decorator.func.attr # "get", "post", "put"
+                        if method in {"get", "post", "put", "delete", "patch"}:
+                            if decorator.args and isinstance(decorator.args[0], ast.Constant):
+                                path = decorator.args[0].value
+                                routes.append((path, method.upper(), node.name))
+    return routes
+
+def _normalize_path(path: str) -> str:
+    # Convert Flask-style <param> segments to OpenAPI {param} segments.
+    return re.sub(r"<([^>]+)>", r"{\1}", path)
+
+def _extract_path_params(path: str):
+    params = []
+    for match in re.finditer(r"<([^>]+)>", path):
+        name = match.group(1)
+        # Strip converters like <int:foo> -> foo
+        if ":" in name:
+            name = name.split(":", 1)[1]
+        params.append(name)
+    return params
+
+def _build_parameters(path: str):
+    parameters = []
+    for name in _extract_path_params(path):
+        parameters.append({
+            "name": name,
+            "in": "path",
+            "required": True,
+            "schema": {"type": "string"}
+        })
+    return parameters
+
+def _legacy_extract_routes_from_ast(app_path: Path):
     routes = []
     tree = ast.parse(app_path.read_text(encoding="utf-8"))
     
@@ -47,6 +92,20 @@ def generate_schema(app_path: Path, schemas_dir: Path):
             "schemas": {}
         }
     }
+
+    # Normalize Flask-style path parameters to OpenAPI style and attach
+    # path parameter definitions for routes such as /api/lineage/<output_digest>.
+    normalized_paths = {}
+    for path, methods in paths.items():
+        normalized = _normalize_path(path)
+        normalized_paths.setdefault(normalized, {})
+        parameters = _build_parameters(path)
+        for method, operation in methods.items():
+            if parameters:
+                operation = dict(operation)
+                operation["parameters"] = parameters
+            normalized_paths[normalized][method] = operation
+    schema["paths"] = normalized_paths
     
     # Load canonical schemas safely
     if schemas_dir.is_dir():
