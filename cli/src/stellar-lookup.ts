@@ -15,6 +15,19 @@ export type ChainProofRecord = {
   issuer: string | null
 }
 
+/**
+ * Chain-level dispute record returned by the Harpocrates Registry contract.
+ */
+export type ChainDisputeRecord = {
+  disputeId: string
+  proofId: string
+  opener: string
+  reason: string
+  status: number
+  createdAt: string
+  resolvedAt?: string
+}
+
 export type StellarLookupOptions = {
   /** Stellar RPC URL (defaults to testnet). */
   rpcUrl?: string
@@ -86,6 +99,112 @@ export async function lookupByVideoHash(
     source: native.source ?? null,
     issuer: native.issuer ?? null,
   }
+}
+
+/**
+ * Read a dispute record from the registry by its dispute ID.
+ *
+ * Uses a simulation-only read so no signing is required. Returns `null`
+ * if the contract returns an empty `Option` (no such dispute).
+ */
+export async function getDispute(
+  contractId: string,
+  disputeId: string,
+  options: StellarLookupOptions = {},
+): Promise<ChainDisputeRecord | null> {
+  const native = await simulateRead(
+    contractId,
+    'get_dispute',
+    [nativeToScVal(disputeId)],
+    options,
+  )
+
+  if (!native) return null
+
+  return {
+    disputeId: native.dispute_id?.toString?.() ?? String(native.dispute_id),
+    proofId: native.proof_id?.toString?.() ?? String(native.proof_id),
+    opener: native.opener ?? null,
+    reason: native.reason ?? '',
+    status: Number(native.status),
+    createdAt: native.created_at?.toString?.() ?? String(native.created_at),
+    resolvedAt: native.resolved_at?.toString?.() ?? undefined,
+  }
+}
+
+/**
+ * Read the number of open disputes for a proof ID.
+ *
+ * Uses a simulation-only read so no signing is required. Returns `null` if
+ * the contract returns an empty `Option`.
+ */
+export async function getOpenDisputeCount(
+  contractId: string,
+  proofId: string,
+  options: StellarLookupOptions = {},
+): Promise<number | null> {
+  const native = await simulateRead(
+    contractId,
+    'get_open_dispute_count',
+    [nativeToScVal(proofId)],
+    options,
+  )
+
+  if (native === null || native === undefined) return null
+
+  return Number(native)
+}
+
+/**
+ * Run a simulation-only contract read and return the decoded native value.
+ * Throws on simulation errors and returns `null` for empty `Option` results.
+ */
+async function simulateRead(
+  contractId: string,
+  method: string,
+  args: unknown[],
+  options: StellarLookupOptions,
+): Promise<any> {
+  const rpcUrl = options.rpcUrl ?? DEFAULT_RPC_URL
+  const networkPassphrase = options.networkPassphrase ?? Networks.TESTNET
+  const source = options.sourceAddress
+
+  if (!source) {
+    throw new Error(
+      'A source address is required for simulation. ' +
+        'Pass --source-address or set HARPOCRATES_SOURCE_ADDRESS env var.',
+    )
+  }
+
+  const server = new rpc.Server(rpcUrl)
+  const account = await server.getAccount(source)
+  const contract = new Contract(contractId)
+
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(contract.call(method, ...args))
+    .setTimeout(30)
+    .build()
+
+  const simulation = await server.simulateTransaction(transaction)
+
+  if (rpc.Api.isSimulationError(simulation)) {
+    throw new Error(simulation.error)
+  }
+
+  if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
+    return null
+  }
+
+  const retval = simulation.result?.retval
+  if (!retval) return null
+
+  const native = scValToNative(retval)
+  if (native === null || native === undefined) return null
+
+  return native
 }
 
 /**
