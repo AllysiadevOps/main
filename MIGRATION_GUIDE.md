@@ -153,8 +153,8 @@ cargo test --lib
 | Scenario | Rollback Action |
 |----------|----------------|
 | v2 proof verification fails | Switch verifier back to the v1 verifier contract |
-| Epoch rotation causes legitimate failures | Admin may restore the previous epoch via `set_scope_epoch`; assess whether old proofs would become valid again |
-| Scope configuration error | Admin may set the epoch to 0, but the storage entry remains and old proofs may become valid again |
+| Epoch rotation causes legitimate failures | Epochs are strictly monotonic; rolling back via `set_scope_epoch` is rejected with `StaleEpoch` to preserve nullifier replay security |
+| Scope configuration error | Epochs cannot be rolled back or reset to 0; configure a new scope identifier if clean state is required |
 | Contract bug in v2 path | Deploy a patched contract and redirect verifier |
 
 ### 5.2 Rollback Procedure
@@ -457,3 +457,62 @@ re-opens exactly the hole this change closes: a pre-#368 verifier infers the
 version from the length instead of reading the commitment. Roll the circuit and
 its consumers forward, not the verifier back. No stored evidence is affected in
 either direction.
+
+## In-Place Registry Wasm Upgrade via Timelock (#86)
+
+The `HarpocratesRegistry` contract code can now be upgraded in place using Soroban's `env.deployer().update_current_contract_wasm`, preserving the contract address, historical proofs, issuers, verifiers, and all persistent storage without redeploying a new contract ID or migrating downstream clients.
+
+Upgrades are governed strictly by the existing timelock framework to prevent unilateral or unexpected changes to contract bytecode.
+
+| Item | Value |
+| --- | --- |
+| Action Kind | `ProposalAction::UpgradeWasm = 6` |
+| Proposal Target | Arbitrary `Address` (e.g. admin address) |
+| Proposal Payload | 32-byte uploaded Wasm hash (`BytesN<32>`) |
+| Timelock Delay | Enforces configured minimum delay (`DEFAULT_TIMELOCK_MIN_DELAY_SECS` = 24h) |
+| Emergency Execution | **Disallowed** (`emergency_execute_timelock` panics with `RegistryError::InvalidProposalAction`) |
+| Event | `ContractUpgraded` (`contract/upgrade`) with `old_wasm_hash` and `new_wasm_hash` |
+| Read Entry Point | `get_current_wasm_hash() -> Option<BytesN<32>>` |
+
+### Upgrade Procedure
+
+1. **Upload New Wasm**:
+   Install the compiled Wasm bytecode onto the network using Stellar CLI to obtain its 32-byte hash:
+   ```text
+   stellar contract install --wasm harpocrates_registry.wasm --source admin --network testnet
+   ```
+2. **Propose Upgrade**:
+   Admin submits a timelock proposal with action `6` (`UpgradeWasm`), specifying the target address and the 32-byte Wasm hash in the payload:
+   ```text
+   stellar contract invoke --id REGISTRY_CONTRACT_ID --source admin --network testnet -- propose_timelocked_action --admin admin --action 6 --target admin --payload NEW_WASM_HASH
+   ```
+3. **Await Timelock Delay**:
+   The proposal must mature past `min_execution_at`. `emergency_execute_timelock` is intentionally prohibited for Wasm upgrades to ensure sufficient notice for auditors and clients.
+4. **Execute Proposal**:
+   Once the delay has elapsed, execute the proposal:
+   ```text
+   stellar contract invoke --id REGISTRY_CONTRACT_ID --source admin --network testnet -- execute_timelocked_proposal --caller admin --proposal_id PROPOSAL_ID
+   ```
+5. **Post-Upgrade Storage Migration**:
+   If the new code revision includes schema modifications, invoke `upgrade_storage` with the admin key:
+   ```text
+   stellar contract invoke --id REGISTRY_CONTRACT_ID --source admin --network testnet -- upgrade_storage --admin admin
+   ```
+
+### Verification Steps
+
+- **Active Wasm Hash**: Query `get_current_wasm_hash` on the contract and confirm it returns `NEW_WASM_HASH`.
+- **Storage Schema**: Query `get_schema_version` to verify expected schema version.
+- **State Continuity**: Confirm verifier (`get_verifier`), admin (`get_admin`), existing issuer standing (`is_issuer`), and proof records remain accessible and unchanged.
+- **Event Audit**: Verify emission of `ContractUpgraded` with topics `["contract", "upgrade"]`.
+
+### Rollback Strategy
+
+If a regression or vulnerability is detected in the upgraded contract bytecode:
+1. Identify the previous Wasm hash (`PREVIOUS_WASM_HASH`) from previous deployment logs or the `old_wasm_hash` field of the `ContractUpgraded` event.
+2. Propose a new timelock action with Action `6` (`UpgradeWasm`) and `payload: PREVIOUS_WASM_HASH`.
+3. Wait for the timelock delay to mature.
+4. Execute the proposal via `execute_timelocked_proposal`.
+
+Because all contract state resides in persistent storage decoupled from the executable bytecode, rolling back the Wasm preserves all existing evidence and contract data intact.
+

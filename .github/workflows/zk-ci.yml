@@ -189,6 +189,10 @@ jobs:
             zk/noir/scripts/reproducible-build.sh --single
           fi
 
+      - name: Verify circuit gate and opcode counts against gates.lock.json
+        run: |
+          python3 zk/bench/gates.py check --summary "$GITHUB_STEP_SUMMARY"
+
       - name: Test the redacted derivative ancestry circuits
         # Focused positive / negative / boundary corpus for the new
         # redacted_ancestry circuit (#356). Assert codes never echo witness

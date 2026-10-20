@@ -66,7 +66,7 @@ describe('VerifyView – offline local verification mode', () => {
     expect(screen.getByText(/on-chain status was not checked in offline mode/i)).toBeInTheDocument()
     expect(screen.getByText(/neondb events were not queried in offline mode/i)).toBeInTheDocument()
     // Online-only controls are hidden in offline mode
-    expect(screen.queryByRole('button', { name: /refresh neondb feed/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /refresh recent proofs/i })).not.toBeInTheDocument()
   })
 
   it('offline success shows the local result and hides the share link', () => {

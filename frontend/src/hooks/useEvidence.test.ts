@@ -151,4 +151,85 @@ describe('useEvidence hashing progress', () => {
       await first
     })
   })
+
+  it('memoizes the digest in memory and skips the hash worker on retry with the same file', async () => {
+    hashFileInWorkerMock.mockResolvedValue('a'.repeat(64))
+    embedVideoMock.mockResolvedValue({
+      embeddedBlob: new Blob(['embedded']),
+      embeddedHash: 'b'.repeat(64),
+      metadataHash: 'c'.repeat(64),
+    })
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: () => 'blob:embedded',
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    })
+
+    const { result } = renderHook(() => useEvidence())
+    const sameFile = new File(['video-bytes'], 'evidence.mp4', { lastModified: 1700000000000 })
+
+    await act(async () => {
+      await result.current.handleEvidence(sameFile)
+    })
+
+    expect(hashFileInWorkerMock).toHaveBeenCalledTimes(1)
+    expect(result.current.proof?.sourceHash).toBe('a'.repeat(64))
+
+    // Retry with the exact same File instance (e.g. after a registration error or flow restart)
+    await act(async () => {
+      await result.current.handleEvidence(sameFile)
+    })
+
+    expect(hashFileInWorkerMock).toHaveBeenCalledTimes(1)
+    expect(embedVideoMock).toHaveBeenCalledTimes(2)
+    expect(result.current.proof?.sourceHash).toBe('a'.repeat(64))
+  })
+
+  it('invalidates the memoized digest and hashes again when a different file is chosen', async () => {
+    hashFileInWorkerMock
+      .mockResolvedValueOnce('a'.repeat(64))
+      .mockResolvedValueOnce('d'.repeat(64))
+      .mockResolvedValueOnce('e'.repeat(64))
+    embedVideoMock.mockResolvedValue({
+      embeddedBlob: new Blob(['embedded']),
+      embeddedHash: 'b'.repeat(64),
+      metadataHash: 'c'.repeat(64),
+    })
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: () => 'blob:embedded',
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    })
+
+    const { result } = renderHook(() => useEvidence())
+    const fileA = new File(['video-bytes'], 'evidence.mp4', { lastModified: 1700000000000 })
+    const fileB = new File(['video-bytes'], 'evidence.mp4', { lastModified: 1700000000000 })
+
+    await act(async () => {
+      await result.current.handleEvidence(fileA)
+    })
+    expect(hashFileInWorkerMock).toHaveBeenCalledTimes(1)
+    expect(result.current.proof?.sourceHash).toBe('a'.repeat(64))
+
+    // Choosing a different File instance (even with identical metadata) triggers hashing
+    await act(async () => {
+      await result.current.handleEvidence(fileB)
+    })
+    expect(hashFileInWorkerMock).toHaveBeenCalledTimes(2)
+    expect(result.current.proof?.sourceHash).toBe('d'.repeat(64))
+
+    // Choosing fileA again after it was invalidated by fileB triggers hashing again
+    await act(async () => {
+      await result.current.handleEvidence(fileA)
+    })
+    expect(hashFileInWorkerMock).toHaveBeenCalledTimes(3)
+    expect(result.current.proof?.sourceHash).toBe('e'.repeat(64))
+  })
 })
+

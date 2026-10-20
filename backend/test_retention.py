@@ -1,7 +1,9 @@
 import os
+import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -165,6 +167,179 @@ def test_retention_batch_limits_match_db():
 def test_retention_worker_rejects_non_positive_batch_size():
     with pytest.raises(ValueError, match="batch_size"):
         RetentionWorker(batch_size=0)
+
+
+def test_retention_worker_start_twice_creates_one_thread_and_stop_joins():
+    mock_storage = MagicMock()
+    mock_storage.sweep_job_files.return_value = 0
+    worker = RetentionWorker(interval_seconds=0.01)
+    with patch("retention.purge_expired_events", return_value=[]), \
+         patch.dict("sys.modules", {"storage": mock_storage}):
+        worker.start()
+        thread = worker._thread
+        assert thread is not None
+        assert thread.is_alive()
+        assert thread.name == "RetentionWorker"
+
+        # Calling start() twice is idempotent: does not create a new thread
+        worker.start()
+        assert worker._thread is thread
+
+        # stop() joins the thread and sets _thread to None
+        worker.stop()
+        assert not thread.is_alive()
+        assert worker._thread is None
+
+        # Calling stop() when thread is already None is safe and idempotent
+        worker.stop()
+        assert worker._thread is None
+
+
+def test_retention_worker_purge_full_then_partial_batches():
+    batch_size = 50
+    worker = RetentionWorker(interval_seconds=60, batch_size=batch_size)
+
+    full_batch = [{"proof_id": f"full_{i}"} for i in range(batch_size)]
+    partial_batch = [{"proof_id": f"partial_{i}"} for i in range(20)]
+
+    mock_storage = MagicMock()
+    mock_storage.sweep_job_files.return_value = 0
+
+    with patch("retention.purge_expired_events", side_effect=[full_batch, partial_batch]) as mock_purge, \
+         patch("retention.metrics_collector") as mock_metrics, \
+         patch("retention.log_structured") as mock_log, \
+         patch.dict("sys.modules", {"storage": mock_storage}):
+        worker._purge()
+
+        assert mock_purge.call_count == 2
+        mock_purge.assert_called_with(batch_size=batch_size)
+        assert mock_metrics.record_deleted_event.call_count == 70
+
+        purged_logs = [
+            call.args[2] for call in mock_log.call_args_list
+            if len(call.args) >= 3 and isinstance(call.args[2], dict) and call.args[2].get("event") == "retention_worker_purged"
+        ]
+        assert [log["count"] for log in purged_logs] == [50, 20]
+
+
+def test_retention_worker_purge_empty_batch():
+    worker = RetentionWorker(interval_seconds=60, batch_size=100)
+    mock_storage = MagicMock()
+    mock_storage.sweep_job_files.return_value = 0
+
+    with patch("retention.purge_expired_events", return_value=[]) as mock_purge, \
+         patch("retention.metrics_collector") as mock_metrics, \
+         patch("retention.log_structured") as mock_log, \
+         patch.dict("sys.modules", {"storage": mock_storage}):
+        worker._purge()
+
+        mock_purge.assert_called_once_with(batch_size=100)
+        assert mock_metrics.record_deleted_event.call_count == 0
+
+        purged_logs = [
+            call.args[2] for call in mock_log.call_args_list
+            if len(call.args) >= 3 and isinstance(call.args[2], dict) and call.args[2].get("event") == "retention_worker_purged"
+        ]
+        assert len(purged_logs) == 0
+
+
+def test_retention_worker_purge_job_files_branches():
+    worker = RetentionWorker(interval_seconds=60, batch_size=100)
+
+    # Branch 1: sweep_job_files purges > 0 files
+    mock_storage_success = MagicMock()
+    mock_storage_success.sweep_job_files.return_value = 3
+    with patch("retention.purge_expired_events", return_value=[]), \
+         patch.dict("sys.modules", {"storage": mock_storage_success}), \
+         patch("retention.log_structured") as mock_log:
+        worker._purge()
+
+        purged_file_logs = [
+            call.args[2] for call in mock_log.call_args_list
+            if len(call.args) >= 3 and isinstance(call.args[2], dict) and call.args[2].get("event") == "retention_job_files_purged"
+        ]
+        assert len(purged_file_logs) == 1
+        assert purged_file_logs[0]["count"] == 3
+
+    # Branch 2: sweep_job_files raises an exception
+    mock_storage_error = MagicMock()
+    mock_storage_error.sweep_job_files.side_effect = OSError("disk error")
+    with patch("retention.purge_expired_events", return_value=[]), \
+         patch.dict("sys.modules", {"storage": mock_storage_error}), \
+         patch("retention.log_structured") as mock_log:
+        worker._purge()
+
+        error_logs = [
+            call.args[2] for call in mock_log.call_args_list
+            if len(call.args) >= 3 and isinstance(call.args[2], dict) and call.args[2].get("event") == "retention_job_files_error"
+        ]
+        assert len(error_logs) == 1
+        assert error_logs[0]["error_type"] == "OSError"
+
+
+def test_retention_worker_run_logs_error_and_keeps_running():
+    first_run_event = threading.Event()
+    second_run_event = threading.Event()
+    call_count = 0
+
+    def mock_purge_expired(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            first_run_event.set()
+            raise RuntimeError("simulated database failure")
+        second_run_event.set()
+        return []
+
+    mock_storage = MagicMock()
+    mock_storage.sweep_job_files.return_value = 0
+
+    worker = RetentionWorker(interval_seconds=0.005)
+    with patch("retention.purge_expired_events", side_effect=mock_purge_expired), \
+         patch("retention.log_structured") as mock_log, \
+         patch.dict("sys.modules", {"storage": mock_storage}):
+        worker.start()
+
+        assert first_run_event.wait(timeout=1.0), "Worker did not execute first purge call"
+        assert second_run_event.wait(timeout=1.0), "Worker stopped running after exception"
+
+        worker.stop()
+
+    assert worker._thread is None
+    error_logs = [
+        call.args[2] for call in mock_log.call_args_list
+        if len(call.args) >= 3 and isinstance(call.args[2], dict) and call.args[2].get("event") == "retention_worker_error"
+    ]
+    assert len(error_logs) >= 1
+    assert error_logs[0]["error_type"] == "RuntimeError"
+
+
+def test_init_retention_worker_disabled(monkeypatch):
+    monkeypatch.setenv("RETENTION_WORKER_ENABLED", "false")
+    stop_retention_worker()
+
+    with patch.object(RetentionWorker, "start") as mock_start:
+        init_retention_worker()
+        from retention import _worker
+        assert _worker is None
+        mock_start.assert_not_called()
+
+
+def test_stop_retention_worker_when_uninitialized():
+    import retention
+    retention._worker = None
+    stop_retention_worker()
+    assert retention._worker is None
+
+
+def test_stop_retention_worker_active():
+    import retention
+    worker = RetentionWorker(interval_seconds=60)
+    with patch.object(worker, "stop") as mock_stop:
+        retention._worker = worker
+        stop_retention_worker()
+        assert retention._worker is None
+        mock_stop.assert_called_once()
 
 
 @pytest.mark.integration

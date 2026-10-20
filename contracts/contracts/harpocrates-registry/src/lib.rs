@@ -444,6 +444,7 @@ pub enum ProposalAction {
     SetProofTtl = 3,
     RevokeCredentialRoot = 4,
     ExpireCredentialRoot = 5,
+    UpgradeWasm = 6,
 }
 
 pub const DEFAULT_SCOPE_EPOCH: u64 = 0;
@@ -988,6 +989,8 @@ pub const REPORTER_COOLDOWN_SECS: u64 = 86_400;
 pub const RESPOND_DEADLINE_SECS: u64 = 604_800;
 /// Seconds from response until the admin must resolve or dismiss (14 days).
 pub const RESOLVE_DEADLINE_SECS: u64 = 1_209_600;
+/// Maximum number of dispute IDs returned by a single `list_proof_disputes` call.
+pub const MAX_PROOF_DISPUTES_PAGE: u32 = 50;
 
 /// Dispute state transitions. Numeric values are stable on-chain identifiers;
 /// do not renumber existing variants.
@@ -1444,6 +1447,12 @@ pub struct SchemaUpgraded {
     pub current: u32,
 }
 
+#[contractevent(topics = ["contract", "upgrade"])]
+pub struct ContractUpgraded {
+    pub old_wasm_hash: BytesN<32>,
+    pub new_wasm_hash: BytesN<32>,
+}
+
 // ---------------------------------------------------------------------------
 // Paginated verifier-set inspection
 // ---------------------------------------------------------------------------
@@ -1553,6 +1562,8 @@ pub enum DataKey {
     VerifierCircuitVersions,
     /// Storage schema version.
     SchemaVersion,
+    /// Hash of the current active contract Wasm bytecode.
+    WasmHash,
     /// Scope epoch for verifier-scope binding.
     ScopeEpoch(BytesN<32>),
     /// Sequential counter for timelock proposal IDs (#86).
@@ -1586,6 +1597,10 @@ pub enum DataKey {
     ReporterCooldown(BytesN<32>),
     /// Scoped nullifier separated by verifier address context (#325).
     VerifierNullifier(Address, BytesN<32>),
+    /// Sequential counter for disputes indexed under a proof_id (#dispute).
+    ProofDisputeSeq(BytesN<32>),
+    /// Dispute ID at 1-based sequence for a proof_id (#dispute).
+    ProofDispute(BytesN<32>, u32),
 }
 
 #[contracterror]
@@ -2450,7 +2465,7 @@ impl HarpocratesRegistry {
         payload: BytesN<32>,
     ) -> u32 {
         require_admin(&env, &admin);
-        if action == 0 || action > 4 {
+        if action == 0 || action > 6 || action == 5 {
             panic_with_error!(&env, RegistryError::InvalidProposalAction);
         }
         let pending_count: u32 = count_pending_proposals(&env);
@@ -2544,6 +2559,9 @@ impl HarpocratesRegistry {
         if proposal.cancelled {
             panic_with_error!(&env, RegistryError::ProposalCancelled);
         }
+        if proposal.action == ProposalAction::UpgradeWasm as u32 {
+            panic_with_error!(&env, RegistryError::InvalidProposalAction);
+        }
         let mut mutable_proposal = proposal.clone();
         mutable_proposal.executed = true;
         env.storage()
@@ -2563,6 +2581,10 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .get(&DataKey::Proposal(proposal_id))
+    }
+
+    pub fn get_current_wasm_hash(env: Env) -> Option<BytesN<32>> {
+        env.storage().persistent().get(&DataKey::WasmHash)
     }
 
     pub fn get_timelock_proposal_count(env: Env) -> u32 {
@@ -2725,6 +2747,12 @@ impl HarpocratesRegistry {
     /// under the previous epoch for that scope will have stale epoch values
     /// and will be rejected by `register_anonymous_verified`.
     ///
+    /// Epochs are strictly monotonic (`epoch > current`). Setting an epoch
+    /// less than or equal to the current epoch panics with `RegistryError::StaleEpoch`
+    /// to prevent epoch rollback and re-enabling previously consumed nullifiers.
+    /// Non-increasing transitions (including equal) are rejected rather than
+    /// treated idempotently to ensure every update explicitly advances the epoch.
+    ///
     /// The scope is a 32-byte identifier derived from the scope string
     /// (e.g., SHA-256 hash mod BN254 field).  An empty (zero) scope
     /// represents the global/unscoped context.
@@ -2732,6 +2760,12 @@ impl HarpocratesRegistry {
     /// Only the registry admin may call this.
     pub fn set_scope_epoch(env: Env, admin: Address, scope: BytesN<32>, epoch: u64) {
         require_admin(&env, &admin);
+
+        let current_epoch = get_scope_epoch_raw(&env, &scope);
+        if epoch <= current_epoch {
+            panic_with_error!(&env, RegistryError::StaleEpoch);
+        }
+
         env.storage()
             .persistent()
             .set(&DataKey::ScopeEpoch(scope.clone()), &epoch);
@@ -4585,6 +4619,9 @@ impl HarpocratesRegistry {
             .persistent()
             .set(&reporter_count_key, &(reporter_open_count + 1));
 
+        // 8b. Append dispute to per-proof dispute index.
+        append_proof_dispute(&env, &proof_id, &dispute_id);
+
         // 9. Emit event.
         DisputeOpened {
             dispute_id,
@@ -4857,6 +4894,71 @@ impl HarpocratesRegistry {
             .persistent()
             .get(&DataKey::ReporterOpenDisputeCount(reporter))
             .unwrap_or(0u32)
+    }
+
+    /// Return the total number of disputes ever opened for a given proof.
+    pub fn get_proof_dispute_count(env: Env, proof_id: BytesN<32>) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ProofDisputeSeq(proof_id))
+            .unwrap_or(0u32)
+    }
+
+    /// Return dispute IDs for a proof in creation order with pagination.
+    ///
+    /// - `cursor` is the zero-based offset into the proof's disputes.
+    /// - `limit` is the maximum number of dispute IDs to return, capped by
+    ///   `MAX_PROOF_DISPUTES_PAGE`.
+    /// - Missing proofs or proofs without disputes yield an empty list (privacy-safe).
+    pub fn list_proof_disputes(
+        env: Env,
+        proof_id: BytesN<32>,
+        cursor: u32,
+        limit: u32,
+    ) -> SorobanVec<BytesN<32>> {
+        let total: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProofDisputeSeq(proof_id.clone()))
+            .unwrap_or(0);
+
+        let mut disputes = SorobanVec::new(&env);
+        if cursor >= total {
+            return disputes;
+        }
+
+        let effective_limit = if limit > MAX_PROOF_DISPUTES_PAGE {
+            MAX_PROOF_DISPUTES_PAGE
+        } else {
+            limit
+        };
+
+        if effective_limit == 0 {
+            return disputes;
+        }
+
+        let remaining = total - cursor;
+        let count = if remaining < effective_limit {
+            remaining
+        } else {
+            effective_limit
+        };
+
+        let end = cursor + count;
+        let mut idx = cursor;
+        while idx < end {
+            let seq = idx + 1; // 1-based storage keys
+            if let Some(dispute_id) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, BytesN<32>>(&DataKey::ProofDispute(proof_id.clone(), seq))
+            {
+                disputes.push_back(dispute_id);
+            }
+            idx += 1;
+        }
+
+        disputes
     }
 
 fn require_admin(env: &Env, candidate: &Address) {
@@ -5256,6 +5358,16 @@ fn append_lineage_child(env: &Env, parent: &BytesN<32>, child: &BytesN<32>) {
     env.storage()
         .persistent()
         .set(&DataKey::LineageChild(parent.clone(), next), child);
+    env.storage().persistent().set(&seq_key, &next);
+}
+
+fn append_proof_dispute(env: &Env, proof_id: &BytesN<32>, dispute_id: &BytesN<32>) {
+    let seq_key = DataKey::ProofDisputeSeq(proof_id.clone());
+    let current: u32 = env.storage().persistent().get(&seq_key).unwrap_or(0);
+    let next = current + 1;
+    env.storage()
+        .persistent()
+        .set(&DataKey::ProofDispute(proof_id.clone(), next), dispute_id);
     env.storage().persistent().set(&seq_key, &next);
 }
 
@@ -6278,6 +6390,24 @@ fn dispatch_timelocked_action(env: &Env, proposal: &TimelockProposal) {
             CredentialRootExpired {
                 credential_root: proposal.payload.clone(),
                 expired_at: record.expires_at,
+            }
+            .publish(env);
+        }
+        6 => {
+            let old_wasm_hash = env
+                .storage()
+                .persistent()
+                .get(&DataKey::WasmHash)
+                .unwrap_or_else(|| BytesN::from_array(env, &[0u8; 32]));
+            let new_wasm_hash = proposal.payload.clone();
+            env.deployer()
+                .update_current_contract_wasm(new_wasm_hash.clone());
+            env.storage()
+                .persistent()
+                .set(&DataKey::WasmHash, &new_wasm_hash);
+            ContractUpgraded {
+                old_wasm_hash,
+                new_wasm_hash,
             }
             .publish(env);
         }

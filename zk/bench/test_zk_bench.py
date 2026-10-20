@@ -93,8 +93,101 @@ def test_percentiles_are_monotonic():
 
 
 def test_percentile_rejects_empty():
+    with pytest.raises(zb.BenchError, match="empty sample list"):
+        zb.percentile([], 50)
     with pytest.raises(zb.BenchError, match="no timing samples"):
         zb.summarize_timings([])
+
+
+def test_percentile_rejects_out_of_range():
+    with pytest.raises(zb.BenchError, match="percentile out of range"):
+        zb.percentile([10.0, 20.0], -0.1)
+    with pytest.raises(zb.BenchError, match="percentile out of range"):
+        zb.percentile([10.0, 20.0], 100.1)
+
+
+def test_percentile_single_sample():
+    for pct in (0, 50, 95, 100):
+        assert zb.percentile([42.5], pct) == 42.5
+    summary = zb.summarize_timings([42.5])
+    assert summary == {
+        "p50": 42.5,
+        "p95": 42.5,
+        "p99": 42.5,
+        "min": 42.5,
+        "max": 42.5,
+        "mean": 42.5,
+        "count": 1.0,
+    }
+
+
+def test_percentile_identical_samples():
+    samples = [15.25, 15.25, 15.25, 15.25]
+    for pct in (0, 50, 95, 100):
+        assert zb.percentile(samples, pct) == 15.25
+    summary = zb.summarize_timings(samples)
+    assert summary == {
+        "p50": 15.25,
+        "p95": 15.25,
+        "p99": 15.25,
+        "min": 15.25,
+        "max": 15.25,
+        "mean": 15.25,
+        "count": 4.0,
+    }
+
+
+def test_percentile_odd_and_even_counts_and_boundaries():
+    odd = [10.0, 20.0, 30.0, 40.0, 50.0]
+    assert zb.percentile(odd, 0) == 10.0
+    assert zb.percentile(odd, 50) == 20.0
+    assert zb.percentile(odd, 95) == 50.0
+    assert zb.percentile(odd, 100) == 50.0
+
+    even = [10.0, 20.0, 30.0, 40.0]
+    assert zb.percentile(even, 0) == 10.0
+    assert zb.percentile(even, 50) == 20.0
+    assert zb.percentile(even, 95) == 40.0
+    assert zb.percentile(even, 100) == 40.0
+
+
+def test_percentile_and_summarize_timings_unsorted_input_contract():
+    # percentile() operates on a pre-sorted sequence directly without sorting
+    unsorted = [50.0, 10.0, 40.0, 20.0, 30.0]
+    assert zb.percentile(unsorted, 0) == 50.0
+    assert zb.percentile(unsorted, 100) == 30.0
+
+    # summarize_timings() sorts its input before computing percentiles and bounds
+    summary_unsorted = zb.summarize_timings(unsorted)
+    summary_sorted = zb.summarize_timings(sorted(unsorted))
+    assert summary_unsorted == summary_sorted
+    assert summary_unsorted["min"] == 10.0
+    assert summary_unsorted["max"] == 50.0
+    assert summary_unsorted["p50"] == 20.0
+    assert summary_unsorted["p95"] == 50.0
+    assert summary_unsorted["p99"] == 50.0
+
+
+def test_summarize_timings_keys_and_rounding():
+    # Nearest-rank uses round() on (pct / 100.0) * n:
+    # For n=3 and pct=50 -> 1.5 -> round(1.5) == 2 -> index 1 (second element)
+    # For n=5 and pct=50 -> 2.5 -> round(2.5) == 2 -> index 1 (second element)
+    summary_3 = zb.summarize_timings([10, 20, 30])
+    assert set(summary_3.keys()) == {"p50", "p95", "p99", "min", "max", "mean", "count"}
+    assert all(isinstance(v, float) for v in summary_3.values())
+    assert summary_3["p50"] == 20.0
+    assert summary_3["p95"] == 30.0
+    assert summary_3["p99"] == 30.0
+    assert summary_3["min"] == 10.0
+    assert summary_3["max"] == 30.0
+    assert summary_3["mean"] == 20.0
+    assert summary_3["count"] == 3.0
+
+    summary_5 = zb.summarize_timings([10, 20, 30, 40, 50])
+    assert summary_5["p50"] == 20.0
+    assert summary_5["p95"] == 50.0
+    assert summary_5["p99"] == 50.0
+    assert summary_5["count"] == 5.0
 
 
 def test_percentile_rejects_oversized_list():

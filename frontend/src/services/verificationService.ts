@@ -37,10 +37,15 @@ export async function extractMetadata(file: File, signal?: AbortSignal): Promise
 }
 
 /** Look up all NeonDB proof events for a given video hash. */
-export async function fetchProofEventsByVideo(videoHash: string, signal?: AbortSignal): Promise<ProofEvent[]> {
+export async function fetchProofEventsByVideo(
+  videoHash: string,
+  signal?: AbortSignal,
+  apiBase: string = API_BASE,
+): Promise<ProofEvent[]> {
   // Validate before building the URL so malformed hashes never reach the network.
   const safeHash = assertValidVideoHash(videoHash)
-  const response = await fetch(`${API_BASE}/api/proofs/by-video/${safeHash}`, { signal })
+  const base = apiBase || API_BASE
+  const response = await fetch(`${base}/api/proofs/by-video/${safeHash}`, { signal })
   if (!response.ok) {
     throw new ApiClientError(await parseActionableApiError(response, 'Database lookup failed.'))
   }

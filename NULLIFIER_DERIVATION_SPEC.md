@@ -88,8 +88,15 @@ Epochs are admin-controlled counters stored per scope on the Soroban registry:
 
 - Default epoch for any scope is `0`
 - Only the registry admin can advance the epoch via `set_scope_epoch`
-- Epochs are monotonically increasing within a scope
+- Epochs are strictly monotonically increasing within a scope (`epoch > current_epoch`)
 - A proof is valid only if its `epoch` field matches the current epoch for its scope
+
+**Monotonicity enforcement:**
+
+- `set_scope_epoch(admin, scope, epoch)` enforces strict monotonicity: the new `epoch` must be strictly greater than the current epoch (`epoch > current_epoch`, where uninitialized scopes default to `DEFAULT_SCOPE_EPOCH = 0`).
+- Attempts to decrease the epoch (`epoch < current_epoch`) or re-set the epoch to the same value (`epoch == current_epoch`) panic with `RegistryError::StaleEpoch`.
+- Strict monotonicity prevents epoch rollback attacks where previously consumed scoped nullifiers could otherwise be revived and re-used in a subsequent context.
+- Maintainers deliberately enforce strict inequality (`epoch > current_epoch`) over idempotence so that every `set_scope_epoch` invocation corresponds to an explicit, intentional advancement of the epoch boundary and prevents redundant state mutations or spurious event emissions.
 
 **Epoch boundary behavior:**
 
@@ -181,12 +188,13 @@ The v2 silent witness circuit produces 192 bytes (6 × 32-byte BN254 field eleme
 - Changing the scope or epoch changes the `scope_hash`, which changes the
   derived nullifier
 
-### 6.3 Epoch-Boundary Replay Protection
+### 6.3 Epoch-Boundary Replay Protection & Rollback Prevention
 
 - When the admin advances the epoch for a scope, all proofs generated under
   the previous epoch are immediately rejected
 - A proof with epoch N cannot be replayed at epoch N+1 because the circuit
   binding includes the epoch in the scope hash
+- **Rollback Prevention:** The registry contract strictly prohibits rolling an epoch backward or repeating the current epoch via `set_scope_epoch`. If `epoch <= current_epoch`, the transaction panics with `RegistryError::StaleEpoch`. This guarantees that nullifiers from prior epochs can never be revived or re-enabled by rolling back the epoch counter.
 
 ### 6.4 Cross-Network Isolation
 
@@ -292,3 +300,4 @@ This specification should be read alongside:
 |---------|------|---------|
 | 1.0 | 2026-07-24 | Initial scoped nullifier v1 derivation |
 | 2.0 | 2026-07-26 | Added formal epoch boundaries, scope canonical encoding, cross-network/cross-verifier isolation guarantees, and v1→v2 backward compatibility |
+| 2.1 | 2026-10-19 | Enforce strict monotonicity in set_scope_epoch (reject epoch <= current with StaleEpoch) to prevent nullifier revival |

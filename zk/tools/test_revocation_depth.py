@@ -60,6 +60,39 @@ def test_rejects_oversized_leaf_count():
     with pytest.raises(rd.DepthBoundError) as exc:
         rd.check_revocation_leaf_count(rd.MAX_REVOCATION_LEAVES + 1)
     assert exc.value.code == "depth_oversize"
+    assert exc.value.signal() == {"rejectCode": "depth_oversize", "field": "depth"}
+
+    with pytest.raises(rd.DepthBoundError) as exc_with_depth:
+        rd.check_revocation_leaf_count(
+            rd.MAX_REVOCATION_LEAVES + 1, rd.MAX_REVOCATION_WITNESS_DEPTH
+        )
+    assert exc_with_depth.value.code == "depth_oversize"
+    assert exc_with_depth.value.signal() == {
+        "rejectCode": "depth_oversize",
+        "field": "depth",
+    }
+
+
+def test_rejects_leaf_count_mismatch_smaller_than_expected():
+    for depth, smaller_count in [(2, 2), (2, 3), (3, 4), (3, 7)]:
+        with pytest.raises(rd.DepthBoundError) as exc:
+            rd.check_revocation_leaf_count(smaller_count, depth)
+        assert exc.value.code == "leaf_count_mismatch"
+        signal = exc.value.signal()
+        assert signal == {"rejectCode": "leaf_count_mismatch", "field": "depth"}
+        assert str(smaller_count) not in str(signal)
+        assert "leaves" not in signal
+
+
+def test_rejects_leaf_count_mismatch_larger_than_expected():
+    for depth, larger_count in [(1, 4), (2, 6)]:
+        with pytest.raises(rd.DepthBoundError) as exc:
+            rd.check_revocation_leaf_count(larger_count, depth)
+        assert exc.value.code == "leaf_count_mismatch"
+        signal = exc.value.signal()
+        assert signal == {"rejectCode": "leaf_count_mismatch", "field": "depth"}
+        assert str(larger_count) not in str(signal)
+        assert "leaves" not in signal
 
 
 def test_fixtures_declare_bound():

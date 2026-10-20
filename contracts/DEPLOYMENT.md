@@ -156,3 +156,105 @@ Tier 3:
   -MetadataHash YOUR_32_BYTE_HEX `
   -ProofId YOUR_32_BYTE_HEX
 ```
+
+## In-Place Registry Wasm Upgrade via Timelock
+
+The `HarpocratesRegistry` contract supports in-place code upgrades through Stellar's `env.deployer().update_current_contract_wasm`, preserving the contract ID and all persistent storage without requiring client migration.
+
+In-place upgrades **can only be executed through the timelock mechanism** (Action Kind `6`: `UpgradeWasm`) and **cannot be bypassed via `emergency_execute_timelock`**.
+
+### 1. Build and Upload New Wasm
+
+Compile the contract and upload the new Wasm bytecode to obtain its 32-byte hash:
+
+```powershell
+cargo test
+stellar contract build
+stellar contract install `
+  --wasm target\wasm32v1-none\release\harpocrates_registry.wasm `
+  --source harpocrates-admin `
+  --network testnet
+```
+
+Take note of the returned 64-character hex Wasm hash (`NEW_WASM_HASH`).
+
+### 2. Propose Wasm Upgrade Proposal
+
+Propose the upgrade through the timelock with Action `6` (`UpgradeWasm`). The payload must be the 32-byte Wasm hash:
+
+```powershell
+stellar contract invoke `
+  --id YOUR_REGISTRY_CONTRACT_ID `
+  --source harpocrates-admin `
+  --network testnet `
+  -- propose_timelocked_action `
+  --proposer harpocrates-admin `
+  --action 6 `
+  --target harpocrates-admin `
+  --payload NEW_WASM_HASH
+```
+
+The call returns the assigned `proposal_id` (e.g. `1`).
+
+### 3. Await Minimum Timelock Delay
+
+The proposal cannot be executed before `min_execution_at` (`created_at + min_delay`). Any premature attempt will revert with `RegistryError::ProposalNotReady` (Code 32). Emergency execution is strictly disallowed for code upgrades and will revert with `RegistryError::InvalidProposalAction` (Code 35).
+
+### 4. Execute Upgrade Proposal
+
+Once the delay expires, execute the proposal:
+
+```powershell
+stellar contract invoke `
+  --id YOUR_REGISTRY_CONTRACT_ID `
+  --source harpocrates-admin `
+  --network testnet `
+  -- execute_timelocked_proposal `
+  --caller harpocrates-admin `
+  --proposal_id 1
+```
+
+Upon execution, the contract invokes `update_current_contract_wasm`, updates `DataKey::WasmHash`, and emits the `ContractUpgraded` event with `old_wasm_hash` and `new_wasm_hash`.
+
+### 5. Execute Storage Schema Migration (If Applicable)
+
+If the new contract version introduces schema updates, run `upgrade_storage`:
+
+```powershell
+stellar contract invoke `
+  --id YOUR_REGISTRY_CONTRACT_ID `
+  --source harpocrates-admin `
+  --network testnet `
+  -- upgrade_storage `
+  --admin harpocrates-admin
+```
+
+Confirm schema migration by querying `get_schema_version`.
+
+### Verification Steps
+
+1. Verify Wasm hash:
+   ```powershell
+   stellar contract invoke `
+     --id YOUR_REGISTRY_CONTRACT_ID `
+     --source harpocrates-admin `
+     --network testnet `
+     -- get_current_wasm_hash
+   ```
+   Ensure the output matches `NEW_WASM_HASH`.
+
+2. Verify state continuity:
+   - Query `get_admin` to confirm administrative authority is preserved.
+   - Query `get_verifier` to verify verifier address continuity.
+   - Query `is_issuer` or verify registered credential roots to confirm all storage data remains intact.
+
+### Rollback Strategy
+
+If defects are identified in the upgraded Wasm code, rollback does not require re-deploying or transferring storage:
+
+1. Identify the previous known-good Wasm hash (`PREVIOUS_WASM_HASH`), obtainable from deployment history or previous `ContractUpgraded` event logs.
+2. Submit a new timelock proposal with Action `6` (`UpgradeWasm`) and `payload: PREVIOUS_WASM_HASH`.
+3. Wait for the timelock delay to elapse.
+4. Execute the proposal via `execute_timelocked_proposal`.
+5. Verify state and active Wasm hash. All existing proofs, nullifiers, and records remain intact throughout the rollback.
+

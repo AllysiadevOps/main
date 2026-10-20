@@ -1,5 +1,5 @@
 import type { ChainProofRecord } from './stellar'
-import { ApiClientError, parseActionableApiError } from './services/apiError'
+import { fetchProofEventsByVideo } from './services/verificationService'
 
 export type VerificationEvent = {
   id: number
@@ -34,6 +34,7 @@ type VerifyArtifactInput = {
   file: File
   videoHash: string
   wallet?: string
+  signal?: AbortSignal
 }
 
 class MalformedEvidenceError extends Error {}
@@ -45,11 +46,12 @@ export async function verifyArtifact({
   file,
   videoHash,
   wallet,
+  signal,
 }: VerifyArtifactInput): Promise<VerificationResult> {
   try {
     const metadata = await extractMetadata(apiBase, file)
     const [events, chainProof] = await Promise.all([
-      fetchProofEventsByVideo(apiBase, videoHash),
+      fetchProofEventsByVideo(videoHash, signal, apiBase),
       fetchChainProof(contractId, videoHash, wallet),
     ])
 
@@ -84,16 +86,6 @@ async function extractMetadata(_apiBase: string, file: File): Promise<unknown> {
     }
     throw err
   }
-}
-
-async function fetchProofEventsByVideo(apiBase: string, videoHash: string) {
-  const response = await fetch(`${apiBase}/api/proofs/by-video/${videoHash}`)
-  if (!response.ok) {
-    throw new ApiClientError(await parseActionableApiError(response, 'Database lookup failed.'))
-  }
-
-  const data = (await response.json()) as { events?: VerificationEvent[] }
-  return data.events ?? []
 }
 
 async function fetchChainProof(contractId: string, videoHash: string, wallet?: string) {

@@ -53,6 +53,10 @@ function stalenessSummary(provenance: ProvenanceRecord) {
 
 export default function ProvenanceCard({ provenance }: ProvenanceCardProps) {
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
+  const [hashCopyState, setHashCopyState] = useState<{
+    status: 'idle' | 'copied' | 'error'
+    label: string
+  }>({ status: 'idle', label: '' })
 
   const serialized = useMemo(() => JSON.stringify(provenance, null, 2), [provenance])
   const warningMessage = [mismatchSummary(provenance), stalenessSummary(provenance)]
@@ -65,6 +69,15 @@ export default function ProvenanceCard({ provenance }: ProvenanceCardProps) {
       setCopyState('copied')
     } catch {
       setCopyState('error')
+    }
+  }
+
+  async function copyHash(value: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(value)
+      setHashCopyState({ status: 'copied', label })
+    } catch {
+      setHashCopyState({ status: 'error', label })
     }
   }
 
@@ -116,10 +129,24 @@ export default function ProvenanceCard({ provenance }: ProvenanceCardProps) {
         <div>
           <dt>Transaction</dt>
           <dd>
-            {provenance.ledger.transactionHash && provenance.links.transaction ? (
-              <a href={provenance.links.transaction} target="_blank" rel="noreferrer" title={provenance.ledger.transactionHash}>
-                {shortValue(provenance.ledger.transactionHash)}
-              </a>
+            {provenance.ledger.transactionHash ? (
+              <span className="provenance-hash-row">
+                {provenance.links.transaction ? (
+                  <a href={provenance.links.transaction} target="_blank" rel="noreferrer" title={provenance.ledger.transactionHash}>
+                    {shortValue(provenance.ledger.transactionHash)}
+                  </a>
+                ) : (
+                  <span title={provenance.ledger.transactionHash}>{shortValue(provenance.ledger.transactionHash)}</span>
+                )}
+                <button
+                  type="button"
+                  className="provenance-copy-btn"
+                  onClick={() => void copyHash(provenance.ledger.transactionHash!, 'Transaction hash')}
+                  aria-label="Copy transaction hash"
+                >
+                  {hashCopyState.status === 'copied' && hashCopyState.label === 'Transaction hash' ? 'Copied' : 'Copy'}
+                </button>
+              </span>
             ) : (
               'Not available'
             )}
@@ -136,9 +163,39 @@ export default function ProvenanceCard({ provenance }: ProvenanceCardProps) {
         <div>
           <dt>Metadata</dt>
           <dd>
-            <span title={provenance.metadata.videoHash}>{shortValue(provenance.metadata.videoHash)}</span>
-            <span title={provenance.metadata.metadataHash}>{shortValue(provenance.metadata.metadataHash)}</span>
-            <span title={provenance.metadata.sourceHash}>{shortValue(provenance.metadata.sourceHash)}</span>
+            <span className="provenance-hash-row">
+              <span title={provenance.metadata.videoHash}>{shortValue(provenance.metadata.videoHash)}</span>
+              <button
+                type="button"
+                className="provenance-copy-btn"
+                onClick={() => void copyHash(provenance.metadata.videoHash, 'Video hash')}
+                aria-label="Copy video hash"
+              >
+                {hashCopyState.status === 'copied' && hashCopyState.label === 'Video hash' ? 'Copied' : 'Copy'}
+              </button>
+            </span>
+            <span className="provenance-hash-row">
+              <span title={provenance.metadata.metadataHash}>{shortValue(provenance.metadata.metadataHash)}</span>
+              <button
+                type="button"
+                className="provenance-copy-btn"
+                onClick={() => void copyHash(provenance.metadata.metadataHash, 'Proof ID')}
+                aria-label="Copy proof ID"
+              >
+                {hashCopyState.status === 'copied' && hashCopyState.label === 'Proof ID' ? 'Copied' : 'Copy'}
+              </button>
+            </span>
+            <span className="provenance-hash-row">
+              <span title={provenance.metadata.sourceHash}>{shortValue(provenance.metadata.sourceHash)}</span>
+              <button
+                type="button"
+                className="provenance-copy-btn"
+                onClick={() => void copyHash(provenance.metadata.sourceHash, 'Source hash')}
+                aria-label="Copy source hash"
+              >
+                {hashCopyState.status === 'copied' && hashCopyState.label === 'Source hash' ? 'Copied' : 'Copy'}
+              </button>
+            </span>
           </dd>
         </div>
         <div>
@@ -154,6 +211,14 @@ export default function ProvenanceCard({ provenance }: ProvenanceCardProps) {
           </dd>
         </div>
       </dl>
+
+      {hashCopyState.status !== 'idle' ? (
+        <p className="provenance-copy-status" role="status" aria-live="polite">
+          {hashCopyState.status === 'copied'
+            ? `${hashCopyState.label} copied to clipboard.`
+            : `Unable to copy ${hashCopyState.label.toLowerCase()}.`}
+        </p>
+      ) : null}
 
       <div className="provenance-actions" aria-label="Provenance export actions">
         <button type="button" onClick={() => void copyProvenance()} aria-label="Copy provenance JSON">

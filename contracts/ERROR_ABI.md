@@ -101,7 +101,7 @@ input, a different actor, or new evidence before the call can succeed.
 | 50 | `UnknownSchema` | unsupported | no | The schema id is not registered. |
 | 51 | `InactiveSchema` | unsupported | no | The schema was deprecated and cannot be used. |
 | 52 | `SchemaVersionMismatch` | unsupported | no | The schema version is not the expected one. |
-| 53 | `StaleEpoch` | expired | no | The scoped-nullifier proof was generated for a stale scope epoch. |
+| 53 | `StaleEpoch` | expired | no | The scoped-nullifier proof was generated for a stale scope epoch, or `set_scope_epoch` attempted a non-increasing epoch. |
 | 54 | `BatchSizeExceeded` | oversized | no | The batch is empty or above the element cap. |
 | 55 | `BatchCredentialRootMismatch` | malformed | no | Batch elements do not share one credential root. |
 | 56 | `BatchCountMismatch` | malformed | no | The batch size does not match the supplied video-hash list. |

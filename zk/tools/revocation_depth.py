@@ -7,6 +7,12 @@ Host-side guard that mirrors the Noir globals:
 
 Oversized or malformed depth values are rejected with a stable machine code
 and never echo leaves, secrets, or witness material.
+
+Reject codes:
+    * ``depth_oversize``: depth > MAX_REVOCATION_WITNESS_DEPTH or leaf_count > MAX_REVOCATION_LEAVES
+    * ``depth_undersize``: depth < 1 or leaf_count < 1
+    * ``malformed_depth``: non-integer or boolean input
+    * ``leaf_count_mismatch``: leaf_count != 2**depth for a bounded depth
 """
 
 from __future__ import annotations
@@ -51,5 +57,5 @@ def check_revocation_leaf_count(leaf_count: object, depth: int | None = None) ->
         bound_depth = check_revocation_depth(depth)
         expected = 1 << bound_depth
         if leaf_count != expected:
-            raise DepthBoundError("depth_oversize")
+            raise DepthBoundError("leaf_count_mismatch")
     return leaf_count

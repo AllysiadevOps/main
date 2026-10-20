@@ -45,6 +45,14 @@ const READONLY_SOURCE = import.meta.env.VITE_STELLAR_READONLY_SOURCE ?? ''
 const POLL_INTERVAL_MS = 1000
 const POLL_TIMEOUT_MS = 30000
 
+export function requireReadSource(source?: string): string {
+  const resolved = source || READONLY_SOURCE
+  if (!resolved) {
+    throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.')
+  }
+  return resolved
+}
+
 type SendTransactionResponse = Awaited<ReturnType<rpc.Server['sendTransaction']>>
 
 /**
@@ -174,10 +182,7 @@ export async function getProofByVideoHash(
   sourceAddress?: string,
 ): Promise<ChainProofRecord | null> {
   assertReleaseCompatibility()
-  const source = sourceAddress || READONLY_SOURCE
-  if (!source) {
-    throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.')
-  }
+  const source = requireReadSource(sourceAddress)
 
   const server = new rpc.Server(RPC_URL)
   const account = await server.getAccount(source)
@@ -218,10 +223,7 @@ export async function getBatchProofStatuses(
   proofIds: string[],
   sourceAddress?: string,
 ): Promise<number[] | null> {
-  const source = sourceAddress || READONLY_SOURCE
-  if (!source) {
-    throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.')
-  }
+  const source = requireReadSource(sourceAddress)
 
   const server = new rpc.Server(RPC_URL)
   const account = await server.getAccount(source)
@@ -301,10 +303,7 @@ export async function getProof(
   proofId: string,
   sourceAddress?: string,
 ): Promise<ChainProofRecord | null> {
-  const source = sourceAddress || READONLY_SOURCE
-  if (!source) {
-    throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.')
-  }
+  const source = requireReadSource(sourceAddress)
 
   const server = new rpc.Server(RPC_URL)
   const account = await server.getAccount(source)
@@ -357,10 +356,7 @@ export async function getIssuerRecord(
   issuer: string,
   sourceAddress?: string,
 ): Promise<IssuerRecord | null> {
-  const source = sourceAddress || READONLY_SOURCE
-  if (!source) {
-    throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.')
-  }
+  const source = requireReadSource(sourceAddress)
 
   const server = new rpc.Server(RPC_URL)
   const account = await server.getAccount(source)
@@ -404,10 +400,7 @@ export async function getDispute(
   disputeId: string,
   sourceAddress?: string,
 ): Promise<ChainDisputeRecord | null> {
-  const source = sourceAddress || READONLY_SOURCE
-  if (!source) {
-    throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.')
-  }
+  const source = requireReadSource(sourceAddress)
 
   const server = new rpc.Server(RPC_URL)
   const account = await server.getAccount(source)
@@ -454,10 +447,7 @@ export async function getOpenDisputeCount(
   proofId: string,
   sourceAddress?: string,
 ): Promise<number | null> {
-  const source = sourceAddress || READONLY_SOURCE
-  if (!source) {
-    throw new Error('Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.')
-  }
+  const source = requireReadSource(sourceAddress)
 
   const server = new rpc.Server(RPC_URL)
   const account = await server.getAccount(source)

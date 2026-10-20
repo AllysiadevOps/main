@@ -26,9 +26,11 @@
     "./stellar-lookup": "./dist/stellar-lookup.js",
     "./receipt": "./dist/receipt.js",
     "./normalize": "./dist/normalize.js",
-    "./signed-receipt": "./dist/signed-receipt.js"
+    "./signed-receipt": "./dist/signed-receipt.js",
+    "./proof-verify": "./dist/proof-verify.js"
   },
   "dependencies": {
+    "@aztec/bb.js": "^0.87.0",
     "@stellar/stellar-sdk": "^15.1.0"
   },
   "devDependencies": {

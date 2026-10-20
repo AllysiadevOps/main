@@ -86,8 +86,27 @@ describe('verification flow integration', () => {
     expect(result.events).toEqual([EVENT])
     expect(result.chainProof).toEqual(ACTIVE_CHAIN_PROOF)
     expect(extractMetadata).toHaveBeenCalledWith(FILE)
-    expect(fetch).toHaveBeenCalledWith(`${API_BASE}/api/proofs/by-video/${VIDEO_HASH}`)
+    expect(fetch).toHaveBeenCalledWith(`${API_BASE}/api/proofs/by-video/${VIDEO_HASH}`, { signal: undefined })
     expect(getProofByVideoHash).toHaveBeenCalledWith(CONTRACT_ID, VIDEO_HASH, undefined)
+  })
+
+  it('forwards abort signal to fetchProofEventsByVideo', async () => {
+    const fetch = mockApi([EVENT])
+    extractMetadata.mockResolvedValue({ protocol: 'harpocrates' })
+    getProofByVideoHash.mockResolvedValue(ACTIVE_CHAIN_PROOF)
+    const controller = new AbortController()
+
+    await verifyArtifact({
+      apiBase: API_BASE,
+      contractId: CONTRACT_ID,
+      file: FILE,
+      videoHash: VIDEO_HASH,
+      signal: controller.signal,
+    })
+
+    expect(fetch).toHaveBeenCalledWith(`${API_BASE}/api/proofs/by-video/${VIDEO_HASH}`, {
+      signal: controller.signal,
+    })
   })
 
   it('marks embedded metadata without corroborating records as unconfirmed', async () => {

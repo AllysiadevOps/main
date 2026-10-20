@@ -1058,7 +1058,18 @@ def create_app() -> Flask:
         except ValueError:
             return jsonify({"error": "limit must be an integer"}), 400
 
-        return jsonify({"ok": True, "events": find_lineage_by_actor(actor_address, parsed_limit)})
+        try:
+            validated_actor_address = validate_source_address(actor_address)
+            if not validated_actor_address:
+                raise ValueError("actor_address must be a valid Stellar G-address")
+        except ValueError:
+            return error_response(
+                code=VALIDATION_ERROR,
+                message="actor_address must be a valid Stellar G-address",
+                status=400,
+            )
+
+        return jsonify({"ok": True, "events": find_lineage_by_actor(validated_actor_address, parsed_limit)})
 
     @app.get("/api/lineage/<output_digest>")
     def lineage_by_output_digest(output_digest: str):

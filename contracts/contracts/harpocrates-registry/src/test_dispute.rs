@@ -928,3 +928,154 @@ fn reporter_cap_does_not_change_per_proof_cap() {
     );
     assert_eq!(client.get_reporter_open_dispute_count(&r), 0);
 }
+
+// ---------------------------------------------------------------------------
+// list_proof_disputes: empty, multiple, pagination, all statuses, supersession
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_list_proof_disputes_empty() {
+    let (env, cid, _admin, _source, _issuer, spid, _) = make_env();
+    let client = HarpocratesRegistryClient::new(&env, &cid);
+
+    assert_eq!(client.get_proof_dispute_count(&spid), 0);
+    let disputes = client.list_proof_disputes(&spid, &0, &10);
+    assert_eq!(disputes.len(), 0);
+
+    let unknown_proof = b32(&env, 0xEE);
+    assert_eq!(client.get_proof_dispute_count(&unknown_proof), 0);
+    let unknown_disputes = client.list_proof_disputes(&unknown_proof, &0, &10);
+    assert_eq!(unknown_disputes.len(), 0);
+}
+
+#[test]
+fn test_list_proof_disputes_multiple_and_pagination() {
+    let (env, cid, _admin, _source, _issuer, spid, _) = make_env();
+    let client = HarpocratesRegistryClient::new(&env, &cid);
+
+    let mut expected_ids = std::vec::Vec::new();
+    for i in 0..MAX_OPEN_DISPUTES_PER_PROOF {
+        let reporter = Address::generate(&env);
+        let d_id = open_tagged(&env, &client, &reporter, &spid, (0x90 + i) as u8);
+        expected_ids.push(d_id);
+    }
+
+    assert_eq!(
+        client.get_proof_dispute_count(&spid),
+        MAX_OPEN_DISPUTES_PER_PROOF
+    );
+
+    // Page 1: limit 2 from cursor 0
+    let page1 = client.list_proof_disputes(&spid, &0, &2);
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page1.get(0).unwrap(), expected_ids[0]);
+    assert_eq!(page1.get(1).unwrap(), expected_ids[1]);
+
+    // Page 2: limit 2 from cursor 2
+    let page2 = client.list_proof_disputes(&spid, &2, &2);
+    assert_eq!(page2.len(), 2);
+    assert_eq!(page2.get(0).unwrap(), expected_ids[2]);
+    assert_eq!(page2.get(1).unwrap(), expected_ids[3]);
+
+    // Page 3: limit 2 from cursor 4 (past last item)
+    let page3 = client.list_proof_disputes(&spid, &4, &2);
+    assert_eq!(page3.len(), 0);
+
+    // Cursor far past end
+    let page_past = client.list_proof_disputes(&spid, &10, &2);
+    assert_eq!(page_past.len(), 0);
+
+    // Limit 0 returns empty
+    let page_zero = client.list_proof_disputes(&spid, &0, &0);
+    assert_eq!(page_zero.len(), 0);
+
+    // Limit exceeding cap is clamped without error
+    let page_capped = client.list_proof_disputes(&spid, &0, &(MAX_PROOF_DISPUTES_PAGE + 10));
+    assert_eq!(page_capped.len(), 4);
+    for i in 0..4 {
+        assert_eq!(page_capped.get(i as u32).unwrap(), expected_ids[i]);
+    }
+}
+
+#[test]
+fn test_list_proof_disputes_all_statuses_and_supersession() {
+    let (env, cid, admin, source, _issuer, spid, sealid) = make_env();
+    let client = HarpocratesRegistryClient::new(&env, &cid);
+
+    let r0 = Address::generate(&env);
+    let r1 = Address::generate(&env);
+    let r2 = Address::generate(&env);
+    let r3 = Address::generate(&env);
+
+    let d0 = open_tagged(&env, &client, &r0, &spid, 0xA0);
+    let d1 = open_tagged(&env, &client, &r1, &spid, 0xA1);
+    let d2 = open_tagged(&env, &client, &r2, &spid, 0xA2);
+    let d3 = open_tagged(&env, &client, &r3, &spid, 0xA3);
+
+    // d0 stays Open.
+    // d1 transitions to Responded.
+    client.respond_dispute(&source, &d1, &b32(&env, 0xB1));
+    // d2 transitions to Responded, then Resolved.
+    client.respond_dispute(&source, &d2, &b32(&env, 0xB2));
+    client.resolve_dispute(&admin, &d2);
+    // d3 transitions to Dismissed.
+    client.dismiss_dispute(&admin, &d3);
+
+    // Resolving d2 and dismissing d3 freed 2 open dispute slots.
+    // Open d4 and supersede it with sealid.
+    let r4 = Address::generate(&env);
+    let d4 = open_tagged(&env, &client, &r4, &spid, 0xA4);
+    client.supersede_dispute(&admin, &d4, &sealid);
+
+    // Total disputes indexed for spid is 5.
+    assert_eq!(client.get_proof_dispute_count(&spid), 5);
+
+    // List all disputes for spid: creation order [d0, d1, d2, d3, d4]
+    let all_disputes = client.list_proof_disputes(&spid, &0, &10);
+    assert_eq!(all_disputes.len(), 5);
+    assert_eq!(all_disputes.get(0).unwrap(), d0);
+    assert_eq!(all_disputes.get(1).unwrap(), d1);
+    assert_eq!(all_disputes.get(2).unwrap(), d2);
+    assert_eq!(all_disputes.get(3).unwrap(), d3);
+    assert_eq!(all_disputes.get(4).unwrap(), d4);
+
+    // Verify all dispute states are preserved and queryable via get_dispute
+    let rec0 = client.get_dispute(&d0).unwrap();
+    assert_eq!(rec0.status, DisputeStatus::Open);
+
+    let rec1 = client.get_dispute(&d1).unwrap();
+    assert_eq!(rec1.status, DisputeStatus::Responded);
+
+    let rec2 = client.get_dispute(&d2).unwrap();
+    assert_eq!(rec2.status, DisputeStatus::Resolved);
+
+    let rec3 = client.get_dispute(&d3).unwrap();
+    assert_eq!(rec3.status, DisputeStatus::Dismissed);
+
+    let rec4 = client.get_dispute(&d4).unwrap();
+    assert_eq!(rec4.status, DisputeStatus::Superseded);
+    assert_eq!(rec4.superseded_by, Some(sealid.clone()));
+
+    // Verify superseding proof has no disputes indexed under it
+    assert_eq!(client.get_proof_dispute_count(&sealid), 0);
+    let seal_disputes = client.list_proof_disputes(&sealid, &0, &10);
+    assert_eq!(seal_disputes.len(), 0);
+
+    // Verify pagination across the 5 items
+    let p1 = client.list_proof_disputes(&spid, &0, &2);
+    assert_eq!(p1.len(), 2);
+    assert_eq!(p1.get(0).unwrap(), d0);
+    assert_eq!(p1.get(1).unwrap(), d1);
+
+    let p2 = client.list_proof_disputes(&spid, &2, &2);
+    assert_eq!(p2.len(), 2);
+    assert_eq!(p2.get(0).unwrap(), d2);
+    assert_eq!(p2.get(1).unwrap(), d3);
+
+    let p3 = client.list_proof_disputes(&spid, &4, &2);
+    assert_eq!(p3.len(), 1);
+    assert_eq!(p3.get(0).unwrap(), d4);
+
+    let p4 = client.list_proof_disputes(&spid, &5, &2);
+    assert_eq!(p4.len(), 0);
+}

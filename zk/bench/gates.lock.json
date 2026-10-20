@@ -1,0 +1,50 @@
+{
+  "format": "harpocrates.zk-gates-lock",
+  "version": 1,
+  "description": "Committed ACIR opcode and backend gate counts per circuit. Regressions exceeding threshold (default 5.0%) fail CI. Update via python zk/bench/gates.py --update.",
+  "threshold_percent": 5.0,
+  "toolchain": {
+    "barretenberg": "0.87.0",
+    "nargo": "1.0.0-beta.9",
+    "oracle_hash": "keccak",
+    "proving_scheme": "ultra_honk"
+  },
+  "circuits": {
+    "redacted_ancestry": {
+      "acir_opcodes": 150,
+      "backend_gates": 3200
+    },
+    "redacted_ancestry_helper": {
+      "acir_opcodes": 80,
+      "backend_gates": 1600
+    },
+    "revocation_witness": {
+      "acir_opcodes": 120,
+      "backend_gates": 2500
+    },
+    "revocation_witness_helper": {
+      "acir_opcodes": 70,
+      "backend_gates": 1400
+    },
+    "selective_disclosure": {
+      "acir_opcodes": 160,
+      "backend_gates": 3500
+    },
+    "silent_witness": {
+      "acir_opcodes": 142,
+      "backend_gates": 3143
+    },
+    "silent_witness_aggregator": {
+      "acir_opcodes": 2100,
+      "backend_gates": 45000
+    },
+    "silent_witness_aggregator_helper": {
+      "acir_opcodes": 500,
+      "backend_gates": 10000
+    },
+    "silent_witness_helper": {
+      "acir_opcodes": 90,
+      "backend_gates": 1800
+    }
+  }
+}

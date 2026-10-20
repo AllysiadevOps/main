@@ -20,6 +20,9 @@ rollout/rollback, and limitations.
 | `zk/bench/browser_runner.mjs` | Node/bb.js prove+verify timings (browser-equivalent) |
 | `zk/bench/results/` | Local reports (gitignored; never commit proof material) |
 | `zk/bench/baselines.lock.json` | Published proof benchmark thresholds (absent ⇒ compare is inert) |
+| `zk/bench/gates.lock.json` | Committed circuit ACIR opcode and backend gate counts |
+| `zk/bench/gates.py` | Circuit gate and opcode regression check tool (`check`, `--update`) |
+| `zk/bench/test_gates.py` | Unit tests for gate check comparison and parser logic |
 | `.github/workflows/zk-ci.yml` | Runs `pytest zk/bench` alongside artifact tooling |
 
 ## Targets

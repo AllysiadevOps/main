@@ -311,6 +311,96 @@ fn test_scope_epoch_can_be_rotated() {
     assert_eq!(client.get_scope_epoch(&scope), 100);
 }
 
+/// Scope epoch cannot be decreased (rollback prevention rejects with StaleEpoch).
+#[test]
+#[should_panic(expected = "Error(Contract, #53)")] // StaleEpoch
+fn test_set_scope_epoch_rejects_decrease() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    client.init(&admin);
+    let scope = b32(&env, 0x42);
+
+    client.set_scope_epoch(&admin, &scope, &5);
+    assert_eq!(client.get_scope_epoch(&scope), 5);
+
+    // Attempting to decrease epoch from 5 to 4 must panic with StaleEpoch
+    client.set_scope_epoch(&admin, &scope, &4);
+}
+
+/// Scope epoch cannot be set to the same value (equal epoch rejects with StaleEpoch).
+#[test]
+#[should_panic(expected = "Error(Contract, #53)")] // StaleEpoch
+fn test_set_scope_epoch_rejects_equal() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    client.init(&admin);
+    let scope = b32(&env, 0x42);
+
+    client.set_scope_epoch(&admin, &scope, &5);
+    assert_eq!(client.get_scope_epoch(&scope), 5);
+
+    // Setting the same epoch (5) must panic with StaleEpoch
+    client.set_scope_epoch(&admin, &scope, &5);
+}
+
+/// Scope epoch cannot be set to 0 when it is already at the default epoch 0.
+#[test]
+#[should_panic(expected = "Error(Contract, #53)")] // StaleEpoch
+fn test_set_scope_epoch_rejects_equal_default_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    client.init(&admin);
+    let scope = b32(&env, 0x42);
+
+    // Current epoch is 0 (DEFAULT_SCOPE_EPOCH); setting 0 must panic with StaleEpoch
+    client.set_scope_epoch(&admin, &scope, &0);
+}
+
+/// Scope epoch increase succeeds and emits ScopeEpochSet event.
+#[test]
+fn test_set_scope_epoch_increase_succeeds_and_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    client.init(&admin);
+    let scope = b32(&env, 0x42);
+
+    assert_eq!(client.get_scope_epoch(&scope), 0);
+
+    // Increase from 0 to 1
+    client.set_scope_epoch(&admin, &scope, &1);
+    assert_eq!(client.get_scope_epoch(&scope), 1);
+
+    // Increase from 1 to 5
+    client.set_scope_epoch(&admin, &scope, &5);
+    assert_eq!(client.get_scope_epoch(&scope), 5);
+
+    assert_ne!(
+        env.events().all(),
+        [].as_slice(),
+        "expected ScopeEpochSet event"
+    );
+}
+
 // ===========================================================================
 // v2 scoped nullifier registration tests
 // ===========================================================================

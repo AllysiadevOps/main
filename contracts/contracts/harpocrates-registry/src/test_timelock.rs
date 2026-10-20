@@ -269,6 +269,33 @@ fn test_emergency_execute_only_admin() {
     assert!(result.is_err(), "non-admin emergency execute should panic");
 }
 
+#[test]
+fn test_emergency_execute_disallowed_for_wasm_upgrade() {
+    let (env, admin) = setup_env();
+    let client = HarpocratesRegistryClient::new(&env, &env.register(HarpocratesRegistry, ()));
+    client.init(&admin);
+
+    let wasm_hash = bytes32(&env, 0x42);
+    let proposal_id = client.propose_timelocked_action(
+        &admin,
+        &(ProposalAction::UpgradeWasm as u32),
+        &admin,
+        &wasm_hash,
+    );
+
+    // Emergency execution of UpgradeWasm must fail with InvalidProposalAction
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.emergency_execute_timelock(&admin, &proposal_id);
+    }));
+    assert!(result.is_err(), "emergency_execute_timelock must reject UpgradeWasm");
+
+    // The proposal must remain unexecuted and uncancelled
+    let proposal = client.get_timelock_proposal(&proposal_id).unwrap();
+    assert!(!proposal.executed);
+    assert!(!proposal.cancelled);
+}
+
+
 // ---------------------------------------------------------------------------
 // Timelock delay configuration tests
 // ---------------------------------------------------------------------------
@@ -454,6 +481,35 @@ fn test_reject_unknown_proposal_action() {
     }));
     assert!(result.is_err(), "unknown action should be rejected");
 }
+
+#[test]
+fn test_reject_action_5_and_accept_action_6() {
+    let (env, admin) = setup_env();
+    let client = HarpocratesRegistryClient::new(&env, &env.register(HarpocratesRegistry, ()));
+    client.init(&admin);
+
+    let target = Address::generate(&env);
+    // Action 5 is unassigned
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.propose_timelocked_action(
+            &admin,
+            &5u32,
+            &target,
+            &zero_payload(&env),
+        );
+    }));
+    assert!(result.is_err(), "unassigned action 5 should be rejected");
+
+    // Action 6 is UpgradeWasm and must succeed
+    let proposal_id = client.propose_timelocked_action(
+        &admin,
+        &(ProposalAction::UpgradeWasm as u32),
+        &target,
+        &zero_payload(&env),
+    );
+    assert_eq!(proposal_id, 1);
+}
+
 
 // ---------------------------------------------------------------------------
 // Pagination tests for list_timelock_proposals

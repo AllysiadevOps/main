@@ -16,7 +16,7 @@ The workflow provides:
 
 ## Action Kinds
 
-Action kinds represent the administrative operations supported by the timelock mechanism (`ProposalAction` enum, validated in `lib.rs` for `propose_timelocked_action` where `action > 0 && action <= 4`):
+Action kinds represent the administrative operations supported by the timelock mechanism (`ProposalAction` enum, validated in `lib.rs` for `propose_timelocked_action` where `action > 0 && action <= 6 && action != 5`):
 
 | Action Kind (`u32`) | Name (`ProposalAction`) | Target Semantics | Payload Semantics | Effect on Execution (`dispatch_timelocked_action`) |
 |---------------------|-------------------------|------------------|-------------------|---------------------------------------------------|
@@ -25,8 +25,9 @@ Action kinds represent the administrative operations supported by the timelock m
 | `3` | `SetProofTtl` | Unused (arbitrary `Address`, e.g. admin or dummy address) | Big-endian `u64` TTL in seconds encoded in the first 8 bytes (`payload[..8]`), zero-padded to 32 bytes | Updates `DataKey::ProofTtl` to the decoded `u64` seconds value. |
 | `4` | `RevokeCredentialRoot` | Unused (arbitrary `Address`) | 32-byte credential root hash (`BytesN<32>`) | Sets `CredentialRootRecord.status = STATUS_REVOKED` at `DataKey::CredentialRootV2`. Emits `CredentialRootRevoked { credential_root }`. |
 | `5` | `ExpireCredentialRoot`* | Unused (arbitrary `Address`) | 32-byte credential root hash (`BytesN<32>`) | Sets `CredentialRootRecord.status = STATUS_EXPIRED` and `expires_at = now` at `DataKey::CredentialRootV2`. Emits `CredentialRootExpired { credential_root, expired_at }`. |
+| `6` | `UpgradeWasm` | Unused (arbitrary `Address`, e.g. admin address) | 32-byte uploaded Wasm hash (`BytesN<32>`) | Calls `env.deployer().update_current_contract_wasm(new_wasm_hash)`. Updates `DataKey::WasmHash` and emits `ContractUpgraded { old_wasm_hash, new_wasm_hash }`. |
 
-> \* **Note on Action Kind 5 (`ExpireCredentialRoot`)**: While defined in `ProposalAction` and handled in `dispatch_timelocked_action`, `propose_timelocked_action` strictly enforces `1..=4` (`action == 0 || action > 4` panics with `InvalidProposalAction`). Therefore, currently action kinds `1` through `4` can be proposed.
+> \* **Note on Action Kinds**: Action kind 5 is unassigned for proposals. `propose_timelocked_action` allows kinds `1..=4` and `6` (`action == 0 || action > 6 || action == 5` panics with `InvalidProposalAction`). Furthermore, Action kind 6 (`UpgradeWasm`) cannot be executed via `emergency_execute_timelock`.
 
 ---
 
@@ -66,7 +67,7 @@ Action kinds represent the administrative operations supported by the timelock m
 ### 1. Proposal (`propose_timelocked_action`)
 - **Caller**: Admin only (`require_admin`).
 - **Validation**:
-  - `action` must be in `1..=4`; otherwise panics with `RegistryError::InvalidProposalAction` (Code `35`).
+  - `action` must be in `1..=4` or `6` (`action != 0 && action <= 6 && action != 5`); otherwise panics with `RegistryError::InvalidProposalAction` (Code `35`).
   - Pending proposals count must be `< MAX_PENDING_TIMELOCK_PROPOSALS` (maximum 16 pending proposals); otherwise panics with `RegistryError::ProposalsSaturated` (Code `37`).
 - **Timing**:
   - `created_at = env.ledger().timestamp()`
@@ -102,7 +103,8 @@ Action kinds represent the administrative operations supported by the timelock m
   - Proposal must exist (`ProposalNotFound`, Code `31`).
   - Proposal must not already be executed (`ProposalAlreadyExecuted`, Code `33`).
   - Proposal must not be cancelled (`ProposalCancelled`, Code `34`).
-  - Can be called immediately after proposal creation when urgent remediation is required (e.g. revoking a compromised issuer or replacing a malfunctioning verifier).
+  - **UpgradeWasm Restriction**: `UpgradeWasm` (`action == 6`) is **strictly disallowed** for emergency execution; calling `emergency_execute_timelock` on an `UpgradeWasm` proposal panics with `RegistryError::InvalidProposalAction` (Code `35`). In-place contract bytecode upgrades CANNOT bypass the timelock delay under any circumstances to ensure transparency and community review.
+  - Can be called immediately after proposal creation when urgent remediation is required for other supported actions (e.g. revoking a compromised issuer or replacing a malfunctioning verifier).
 - **Effect**:
   - Marks `executed = true`.
   - Dispatches action via `dispatch_timelocked_action`.
@@ -118,7 +120,7 @@ Action kinds represent the administrative operations supported by the timelock m
 | `32` | `ProposalNotReady` | State | Attempted normal execution before `min_execution_at` has elapsed. Retry once time passes. |
 | `33` | `ProposalAlreadyExecuted` | State | Attempted execution or cancellation of an already executed proposal. |
 | `34` | `ProposalCancelled` | State | Attempted execution of a cancelled proposal. |
-| `35` | `InvalidProposalAction` | Malformed | Action kind is `0` or exceeds `4` during proposal creation, or unknown at dispatch. |
+| `35` | `InvalidProposalAction` | Malformed | Action kind is `0`, `5`, or exceeds `6` during proposal creation, unknown at dispatch, or action is disallowed for emergency execution (e.g. `UpgradeWasm`). |
 | `36` | `InvalidProposalPayload` | Malformed | Proposal payload failed formatting/size validation. |
 | `37` | `ProposalsSaturated` | Resource | Active pending proposal count reached `MAX_PENDING_TIMELOCK_PROPOSALS` (`16`). |
 | `38` | `InvalidTimelockDelay` | Malformed | Delay is `0` or exceeds `MAX_TIMELOCK_MIN_DELAY_SECS` (`604_800` seconds / 7 days). |
@@ -137,6 +139,7 @@ All timelock events follow Soroban event conventions with structured topics:
 | `TimelockProposalExecuted` | `["timelock", "exec", proposal_id, executed_by]` | `action: u32, executed_at: u64` | Emitted when a proposal is executed after the timelock delay. |
 | `TimelockEmergencyExec` | `["timelock", "emergency", proposal_id, executed_by]` | `action: u32, executed_at: u64` | Emitted when a proposal is executed immediately via emergency bypass by admin. |
 | `TimelockMinDelaySet` | `["timelock", "delay", "set", set_by]` | `previous_delay: u64, new_delay: u64` | Emitted when the minimum timelock delay is reconfigured. |
+| `ContractUpgraded` | `["contract", "upgrade"]` | `old_wasm_hash: BytesN<32>, new_wasm_hash: BytesN<32>` | Emitted when contract Wasm code is upgraded in-place via timelock proposal execution. |
 
 ---
 
@@ -147,3 +150,5 @@ Contract entry points for inspecting timelock state:
 - `get_timelock_proposal(proposal_id: u32) -> Option<TimelockProposal>`: Fetches the stored proposal record containing action, proposer, target, payload, timestamps, and status flags (`executed`, `cancelled`).
 - `get_timelock_proposal_count() -> u32`: Returns total sequential proposal count created so far.
 - `get_timelock_min_delay_secs() -> u64`: Returns current minimum delay in seconds.
+- `get_current_wasm_hash() -> Option<BytesN<32>>`: Returns the current active Wasm hash recorded in contract storage after an in-place upgrade.
+

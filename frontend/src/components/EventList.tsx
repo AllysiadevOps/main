@@ -1,17 +1,51 @@
+import { useEffect, useRef } from 'react'
+import { useLiveRegion } from '../hooks/useA11y'
 import type { ProofEvent } from '../types'
 import { shortHash } from '../utils'
 
 type Props = {
   events: ProofEvent[]
-  onRefresh: () => void
+  onRefresh: () => void | Promise<void>
+}
+
+function formatRefreshAnnouncement(count: number): string {
+  if (count === 0) return 'No events loaded'
+  return `${count} ${count === 1 ? 'event' : 'events'} loaded`
 }
 
 export function EventList({ events, onRefresh }: Props) {
+  const { message, announce } = useLiveRegion()
+  const pendingRefreshRef = useRef(false)
+  const eventsCountRef = useRef(events.length)
+
+  useEffect(() => {
+    eventsCountRef.current = events.length
+    if (!pendingRefreshRef.current) return
+    pendingRefreshRef.current = false
+    announce(formatRefreshAnnouncement(events.length))
+  }, [events, announce])
+
+  const handleRefresh = () => {
+    pendingRefreshRef.current = true
+    const result = onRefresh()
+    if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
+      void Promise.resolve(result).finally(() => {
+        if (pendingRefreshRef.current) {
+          pendingRefreshRef.current = false
+          announce(formatRefreshAnnouncement(eventsCountRef.current))
+        }
+      })
+    }
+  }
+
   return (
     <>
-      <button className="verify-input" type="button" onClick={onRefresh}>
-        Refresh NeonDB feed
+      <button className="verify-input" type="button" onClick={handleRefresh}>
+        Refresh recent proofs
       </button>
+      <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+        {message}
+      </div>
       <div className="event-list">
         {events.length === 0 ? (
           <p>No events loaded.</p>
@@ -52,3 +86,5 @@ export function EventList({ events, onRefresh }: Props) {
     </>
   )
 }
+export default EventList
+

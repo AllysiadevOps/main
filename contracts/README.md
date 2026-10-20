@@ -521,16 +521,17 @@ returns an empty vector for such proofs. The existing `ProofRecord` schema is un
 ## Dispute And Supersession
 
 `open_dispute`, `respond_dispute`, `resolve_dispute`, `dismiss_dispute`,
-`supersede_dispute`, `get_dispute`, and `get_open_dispute_count` add a bounded,
+`supersede_dispute`, `get_dispute`, `get_open_dispute_count`,
+`get_proof_dispute_count`, and `list_proof_disputes` add a bounded,
 auditable dispute/correction state machine. Disputes never modify or delete the
 disputed proof and are independent of revocation - a disputed proof can still
 report `Valid` from `get_proof_status`. Reporter identity is stored only as a
 caller-supplied `reporter_hash` commitment, and events carry commitment hashes
 and timestamps only.
 
-Bounds: `MAX_OPEN_DISPUTES_PER_PROOF = 4`, `REPORTER_COOLDOWN_SECS = 86400`,
+Bounds: `MAX_OPEN_DISPUTES_PER_PROOF = 4`, `MAX_PROOF_DISPUTES_PAGE = 50`, `REPORTER_COOLDOWN_SECS = 86400`,
 `RESPOND_DEADLINE_SECS = 604800`, `RESOLVE_DEADLINE_SECS = 1209600`. All new
-storage keys (`Dispute`, `ProofOpenDisputeCount`, `ReporterCooldown`) are
+storage keys (`Dispute`, `ProofOpenDisputeCount`, `ReporterCooldown`, `ProofDisputeSeq`, `ProofDispute`) are
 additive, so upgrading requires no migration and rollback is a plain wasm
 redeploy.
 

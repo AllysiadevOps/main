@@ -3,6 +3,12 @@
 Flask service for video proof packaging, steganographic metadata extraction,
 and local developer proof tooling.
 
+## Webhooks
+
+Outbound webhook request fields, headers, HMAC-SHA-256 signature verification,
+replay guidance, and retry/backoff behaviour are documented in
+[Webhook delivery and signature verification](docs/webhooks.md).
+
 ## Steganography
 
 `POST /api/stego/embed` accepts a video and JSON metadata, then returns an

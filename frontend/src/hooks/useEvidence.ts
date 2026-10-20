@@ -118,6 +118,13 @@ export function useEvidence(): UseEvidenceReturn {
   const stageRef = useRef<Stage>('idle')
   const proveAbortRef = useRef<AbortController | null>(null)
   const evidenceFlowAbortRef = useRef<AbortController | null>(null)
+  const cachedFileHashRef = useRef<{
+    file: File
+    name: string
+    size: number
+    lastModified: number
+    digest: string
+  } | null>(null)
 
   useEffect(() => {
     stageRef.current = stage
@@ -186,27 +193,57 @@ export function useEvidence(): UseEvidenceReturn {
       evidenceFlowAbortRef.current === controller && !controller.signal.aborted
 
     setFile(nextFile)
-    setHashProgress({
-      processedBytes: 0,
-      totalBytes: nextFile.size,
-      percentage: nextFile.size === 0 ? 100 : 0,
-    })
-    setStage('hashing')
-    setMessage('Hashing video locally in the browser: 0%.')
+
+    const cached = cachedFileHashRef.current
+    const isCacheHit =
+      cached !== null &&
+      cached.file === nextFile &&
+      cached.name === nextFile.name &&
+      cached.size === nextFile.size &&
+      cached.lastModified === nextFile.lastModified
+
+    if (!isCacheHit) {
+      cachedFileHashRef.current = null
+      setHashProgress({
+        processedBytes: 0,
+        totalBytes: nextFile.size,
+        percentage: nextFile.size === 0 ? 100 : 0,
+      })
+      setStage('hashing')
+      setMessage('Hashing video locally in the browser: 0%.')
+    } else {
+      setHashProgress({
+        processedBytes: nextFile.size,
+        totalBytes: nextFile.size,
+        percentage: 100,
+      })
+    }
 
     try {
-      const sourceHash = await hashFileInWorker(
-        nextFile,
-        (progress) => {
-          if (!isCurrentFlow()) return
-          setHashProgress(progress)
-          setMessage(
-            `Hashing video locally in the browser: ${progress.percentagg}% (${progress.processedBytes.toLocaleString()} / ${progress.totalBytes.toLocaleString()} bytes).`,
-          )
-        },
-        controller.signal,
-      )
-      if (!isCurrentFlow()) return
+      let sourceHash: string
+      if (isCacheHit) {
+        sourceHash = cached.digest
+      } else {
+        sourceHash = await hashFileInWorker(
+          nextFile,
+          (progress) => {
+            if (!isCurrentFlow()) return
+            setHashProgress(progress)
+            setMessage(
+              `Hashing video locally in the browser: ${progress.percentage}% (${progress.processedBytes.toLocaleString()} / ${progress.totalBytes.toLocaleString()} bytes).`,
+            )
+          },
+          controller.signal,
+        )
+        if (!isCurrentFlow()) return
+        cachedFileHashRef.current = {
+          file: nextFile,
+          name: nextFile.name,
+          size: nextFile.size,
+          lastModified: nextFile.lastModified,
+          digest: sourceHash,
+        }
+      }
 
       const { sha256 } = await import('../utils')
       const proofId = await sha256(`${sourceHash}:${crypto.randomUUID()}`)

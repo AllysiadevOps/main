@@ -223,9 +223,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="verify committed vector file matches generated output without writing",
     )
+    parser.add_argument(
+        "--out",
+        "--output",
+        type=Path,
+        default=None,
+        help="destination path for generated vectors (defaults to malformed_public_inputs_v1.json)",
+    )
     if argv is None:
         argv = sys.argv[1:] if Path(sys.argv[0]).name == Path(__file__).name else []
     args = parser.parse_args(list(argv))
+
+    target_path = args.out if args.out is not None else OUT_PATH
 
     document = build_document()
     seen: set[str] = set()
@@ -237,33 +246,33 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     rendered = json.dumps(document, indent=2, ensure_ascii=False) + "\n"
     if args.check:
-        if not OUT_PATH.is_file():
-            print(f"missing vector file: {OUT_PATH}", file=sys.stderr)
+        if not target_path.is_file():
+            print(f"missing vector file: {target_path}", file=sys.stderr)
             raise SystemExit(1)
-        committed = OUT_PATH.read_text(encoding="utf-8")
+        committed = target_path.read_text(encoding="utf-8")
         if committed != rendered:
             diff = "".join(
                 difflib.unified_diff(
                     committed.splitlines(keepends=True),
                     rendered.splitlines(keepends=True),
-                    fromfile=f"{OUT_PATH.name} (committed)",
-                    tofile=f"{OUT_PATH.name} (generated)",
+                    fromfile=f"{target_path.name} (committed)",
+                    tofile=f"{target_path.name} (generated)",
                 )
             )
             print(
-                f"{OUT_PATH} is out of date; regenerate with `{document['regenerate_with']}`:",
+                f"{target_path} is out of date; regenerate with `{document['regenerate_with']}`:",
                 file=sys.stderr,
             )
             print(diff, end="", file=sys.stderr)
             raise SystemExit(1)
-        print(f"verified {len(document['cases'])} cases in {OUT_PATH}")  # type: ignore[arg-type]
+        print(f"verified {len(document['cases'])} cases in {target_path}")  # type: ignore[arg-type]
         return 0
 
-    OUT_PATH.write_text(
+    target_path.write_text(
         rendered,
         encoding="utf-8",
     )
-    print(f"wrote {len(document['cases'])} cases to {OUT_PATH}")  # type: ignore[arg-type]
+    print(f"wrote {len(document['cases'])} cases to {target_path}")  # type: ignore[arg-type]
     return 0
 
 

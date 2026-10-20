@@ -38,6 +38,12 @@ export type StellarLookupOptions = {
 }
 
 const DEFAULT_RPC_URL = 'https://soroban-testnet.stellar.org'
+const DEFAULT_SIMULATION_SOURCE = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF'
+
+/**
+ * On-chain lifecycle status of a proof returned by `lookupProofStatus`.
+ */
+export type ProofLifecycleStatus = 'registered' | 'revoked' | 'expired' | 'unknown'
 
 /**
  * Resolve the RPC URL from an explicit option, the HARPOCRATES_RPC_URL env
@@ -48,7 +54,7 @@ export function resolveRpcUrl(explicit?: string): string {
   const fromEnv = process.env.HARPOCRATES_RPC_URL
   if (fromEnv !== undefined && fromEnv !== '') return fromEnv
   return DEFAULT_RPC_URL
- }
+}
 
 /**
  * Resolve the contract ID from an explicit option or the
@@ -59,6 +65,102 @@ export function resolveContractId(explicit?: string): string | undefined {
   const fromEnv = process.env.HARPOCRATES_CONTRACT_ID
   if (fromEnv !== undefined && fromEnv !== '') return fromEnv
   return undefined
+}
+
+/**
+ * Map a decoded Soroban `ProofVerificationStatus` value to a stable CLI status string.
+ */
+export function normalizeProofStatus(value: unknown): ProofLifecycleStatus {
+  if (value === null || value === undefined) return 'unknown'
+
+  const unwrapped =
+    Array.isArray(value) && value.length > 0
+      ? value[0]
+      : typeof value === 'object' && 'status' in (value as Record<string, unknown>)
+        ? (value as { status: unknown }).status
+        : value
+
+  if (typeof unwrapped === 'number' || typeof unwrapped === 'bigint') {
+    switch (Number(unwrapped)) {
+      case 1:
+        return 'registered'
+      case 2:
+        return 'revoked'
+      case 3:
+        return 'expired'
+      default:
+        return 'unknown'
+    }
+  }
+
+  if (typeof unwrapped === 'string') {
+    const normalized = unwrapped.trim().toLowerCase().replace(/[\s_-]+/g, '')
+    switch (normalized) {
+      case 'valid':
+      case 'registered':
+        return 'registered'
+      case 'revoked':
+        return 'revoked'
+      case 'expired':
+        return 'expired'
+      case 'notfound':
+      case 'unknown':
+      case 'missing':
+        return 'unknown'
+      default:
+        return 'unknown'
+    }
+  }
+
+  return 'unknown'
+}
+
+/**
+ * Look up the on-chain verification status of a proof by its 32-byte proof ID.
+ *
+ * Uses the same read-only simulation path as `lookupByVideoHash`. Validates
+ * `proofId` before creating the RPC client so malformed IDs never trigger a
+ * network request.
+ */
+export async function lookupProofStatus(
+  contractId: string,
+  proofId: string,
+  options: StellarLookupOptions = {},
+): Promise<ProofLifecycleStatus> {
+  // Encode the 32-byte proof ID as scBytes32 expected by Soroban.
+  const proofIdScVal = nativeToScVal(hexToBytes(asHex32(proofId, 'proofId')))
+
+  const rpcUrl = resolveRpcUrl(options.rpcUrl)
+  const networkPassphrase = options.networkPassphrase ?? Networks.TESTNET
+  const source =
+    options.sourceAddress ||
+    process.env.HARPOCRATES_SOURCE_ADDRESS ||
+    DEFAULT_SIMULATION_SOURCE
+
+  const server = new rpc.Server(rpcUrl)
+  const account = await server.getAccount(source)
+  const contract = new Contract(contractId)
+
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(contract.call('get_proof_status', proofIdScVal))
+    .setTimeout(30)
+    .build()
+
+  const simulation = await server.simulateTransaction(transaction)
+
+  if (rpc.Api.isSimulationError(simulation)) {
+    throw new Error(simulation.error)
+  }
+
+  if (!rpc.Api.isSimulationSuccess(simulation) && !rpc.Api.isSimulationRestore(simulation)) {
+    return 'unknown'
+  }
+
+  const native = simulation.result?.retval ? scValToNative(simulation.result.retval) : null
+  return normalizeProofStatus(native)
 }
 
 /**

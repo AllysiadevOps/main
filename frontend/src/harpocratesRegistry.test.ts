@@ -26,7 +26,7 @@ vi.mock('@stellar/freighter-api', async () => {
   }
 })
 
-const { getDispute, getOpenDisputeCount } = await import('./harpocratesRegistry')
+const { getDispute, getOpenDisputeCount, requireReadSource } = await import('./harpocratesRegistry')
 
 const CONTRACT_ID = 'CCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
 const SOURCE = 'GBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
@@ -113,3 +113,19 @@ describe('getOpenDisputeCount', () => {
     await expect(getOpenDisputeCount(CONTRACT_ID, PROOF_ID, SOURCE)).rejects.toThrow('host failure')
   })
 })
+
+describe('requireReadSource', () => {
+  it('throws the same message when no source is configured', () => {
+    expect(() => requireReadSource()).toThrow(
+      'Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.',
+    )
+    expect(() => requireReadSource('')).toThrow(
+      'Set VITE_STELLAR_READONLY_SOURCE or connect a wallet for on-chain verification.',
+    )
+  })
+
+  it('returns the provided source when present', () => {
+    expect(requireReadSource(SOURCE)).toBe(SOURCE)
+  })
+})
+
