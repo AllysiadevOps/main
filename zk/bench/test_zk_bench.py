@@ -500,3 +500,14 @@ def test_published_baselines_detect_size_regression(lock: zb.Lock):
         phase["sizes"]["proof_bytes"] = 65535
     findings = zb.compare_report(report, baselines)
     assert any("proof_bytes" in f for f in findings), findings
+
+
+def test_main_run_rejects_unknown_or_empty_phases(capsys):
+    """Unknown or empty phases must fail fast, exit 2 via parser.error, and list valid phases."""
+    for bad_phases in ["prov", "prove,invalid", ",,,", ""]:
+        with pytest.raises(SystemExit) as excinfo:
+            zb.main(["run", "--target", "ci", "--synthetic", "--phases", bad_phases])
+        assert excinfo.value.code == zb.EXIT_USAGE
+        err = capsys.readouterr().err
+        assert "prove" in err and "verify" in err
+

@@ -421,3 +421,92 @@ fn pause_and_unpause_emit_events_without_sensitive_payloads() {
     // Payload is limited to domain bits, actor address, and timestamps --
     // no proof, witness, media, or credential material is ever included.
 }
+
+// ---------------------------------------------------------------------------
+// Delegated entrypoints: pause is enforced on Tier 2 and Tier 3 delegates
+// ---------------------------------------------------------------------------
+
+#[test]
+#[should_panic(expected = "Error(Contract, #21)")]
+fn pause_blocks_register_source_delegated() {
+    let (env, contract_id, admin, _, _) = setup(1_000);
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    // Set up a source and a delegate with a valid delegation.
+    let source = Address::generate(&env);
+    let delegate = Address::generate(&env);
+    client.grant_delegation(
+        &source,
+        &delegate,
+        &DELEGATION_SCOPE_REGISTER_SOURCE,
+        &3600u64,
+    );
+
+    client.pause(&admin, &PAUSE_DOMAIN_TIER2_REGISTRATION, &3600u64);
+
+    // The delegated path must respect the same Tier 2 pause as the direct path.
+    client.register_source_delegated(
+        &delegate,
+        &source,
+        &b32(&env, 1),
+        &b32(&env, 2),
+        &b32(&env, 3),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #21)")]
+fn pause_blocks_register_seal_delegated() {
+    let (env, contract_id, admin, _, _) = setup(1_000);
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    // Set up an issuer and a delegate with a valid delegation.
+    let issuer = Address::generate(&env);
+    let delegate = Address::generate(&env);
+    client.add_issuer(&admin, &issuer, &b32(&env, 10));
+    client.grant_delegation(
+        &issuer,
+        &delegate,
+        &DELEGATION_SCOPE_REGISTER_SEAL,
+        &3600u64,
+    );
+
+    client.pause(&admin, &PAUSE_DOMAIN_TIER3_REGISTRATION, &3600u64);
+
+    // The delegated path must respect the same Tier 3 pause as the direct path.
+    client.register_seal_delegated(
+        &delegate,
+        &issuer,
+        &b32(&env, 1),
+        &b32(&env, 2),
+        &b32(&env, 3),
+    );
+}
+
+#[test]
+fn delegated_registration_unblocked_when_different_tier_paused() {
+    let (env, contract_id, admin, _, _) = setup(1_000);
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+
+    // Set up a source and delegate for Tier 2.
+    let source = Address::generate(&env);
+    let delegate = Address::generate(&env);
+    client.grant_delegation(
+        &source,
+        &delegate,
+        &DELEGATION_SCOPE_REGISTER_SOURCE,
+        &7200u64,
+    );
+
+    // Pause only Tier 1 — Tier 2 delegated path must still be open.
+    client.pause(&admin, &PAUSE_DOMAIN_TIER1_REGISTRATION, &3600u64);
+
+    let rec = client.register_source_delegated(
+        &delegate,
+        &source,
+        &b32(&env, 11),
+        &b32(&env, 12),
+        &b32(&env, 13),
+    );
+    assert_eq!(rec.tier, TIER_CONSISTENT_SOURCE);
+}

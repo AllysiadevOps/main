@@ -1,8 +1,12 @@
 import logging
 import os
+import re
 import stat
-import sys
-from patheimport Path
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+LOGGER = logging.getLogger(__name__)
 
 default_storage_dir = "/tmp/harpocrates_jobs"
 
@@ -28,13 +32,13 @@ def get_storage_dir() -> Path:
 
     posix = os.name == "posix"
     if posix:
-        storage_dir.mkdir(mode=00700, parents=True, exist_ok=True)
+        storage_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         try:
             owner_uid = _get_owner_uid(storage_dir)
             if owner_uid == os.getuid():
-                current_mode = stat.SMODE(storage_dir.stat().st_mode)
-                if current_mode != 00700:
-                    os.chmod(storage_dir, 00700)
+                current_mode = stat.S_IMODE(storage_dir.stat().st_mode)
+                if current_mode != 0o700:
+                    os.chmod(storage_dir, 0o700)
             elif owner_uid is not None:
                 _log_warning(
                     "Storage directory is owned by another user; "

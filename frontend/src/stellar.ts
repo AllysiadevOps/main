@@ -17,6 +17,7 @@ export {
   getProofHistory,
   getProofHistoryAt,
   getProofHistoryCount,
+  getOpenDisputeCount,
   registerProofOnStellar,
   verifyProof,
   getVerifierState,

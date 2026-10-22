@@ -226,6 +226,86 @@ class CheckReportTests(unittest.TestCase):
         with self.assertRaises(cc.CoverageCheckError):
             cc.check("backend", report, self.dir)
 
+    def test_llvm_cov_json_report_passes(self) -> None:
+        write_json(
+            self.dir / "contracts.json",
+            {
+                "workspace": "contracts",
+                "report_format": "llvm_cov_json",
+                "thresholds": {"lines": 70, "regions": 65},
+            },
+        )
+        report = self.dir / "coverage.json"
+        write_json(
+            report,
+            {
+                "data": [
+                    {
+                        "totals": {
+                            "lines": {"count": 100, "covered": 85, "percent": 85.0},
+                            "regions": {"count": 100, "covered": 75, "percent": 75.0},
+                            "functions": {"count": 20, "covered": 18, "percent": 90.0},
+                        }
+                    }
+                ]
+            },
+        )
+        self.assertEqual(cc.check("contracts", report, self.dir), [])
+
+    def test_llvm_cov_json_report_fails_below_threshold(self) -> None:
+        write_json(
+            self.dir / "contracts.json",
+            {
+                "workspace": "contracts",
+                "report_format": "llvm_cov_json",
+                "thresholds": {"lines": 70, "regions": 65},
+            },
+        )
+        report = self.dir / "coverage.json"
+        write_json(
+            report,
+            {
+                "data": [
+                    {
+                        "totals": {
+                            "lines": {"count": 100, "covered": 50, "percent": 50.0},
+                            "regions": {"count": 100, "covered": 40, "percent": 40.0},
+                        }
+                    }
+                ]
+            },
+        )
+        failures = cc.check("contracts", report, self.dir)
+        self.assertEqual(len(failures), 2)
+
+    def test_llvm_cov_json_missing_data_fails_closed(self) -> None:
+        write_json(
+            self.dir / "contracts.json",
+            {
+                "workspace": "contracts",
+                "report_format": "llvm_cov_json",
+                "thresholds": {"lines": 70},
+            },
+        )
+        report = self.dir / "coverage.json"
+        write_json(report, {"data": []})
+        with self.assertRaises(cc.CoverageCheckError):
+            cc.check("contracts", report, self.dir)
+
+    def test_llvm_cov_json_missing_totals_fails_closed(self) -> None:
+        write_json(
+            self.dir / "contracts.json",
+            {
+                "workspace": "contracts",
+                "report_format": "llvm_cov_json",
+                "thresholds": {"lines": 70},
+            },
+        )
+        report = self.dir / "coverage.json"
+        write_json(report, {"data": [{}]})
+        with self.assertRaises(cc.CoverageCheckError):
+            cc.check("contracts", report, self.dir)
+
 
 class LintThresholdsTests(unittest.TestCase):
     def test_lint_empty_directory_fails_closed(self) -> None:
@@ -243,7 +323,7 @@ class LintThresholdsTests(unittest.TestCase):
 
     def test_published_thresholds_cover_backend_frontend_cli(self) -> None:
         names = {path.stem for path in cc.THRESHOLDS_DIR.glob("*.json")}
-        self.assertEqual(names, {"backend", "frontend", "cli"})
+        self.assertEqual(names, {"backend", "frontend", "cli", "contracts"})
 
 
 class MainCliTests(unittest.TestCase):

@@ -1,3 +1,9 @@
+# Historical Archive: Pull Request Scratch
+
+> **Historical Archive**: This document is an unmaintained historical working note / PR scratch file preserved for reference. It is not part of the active protocol documentation.
+
+---
+
 # chore(devx): run deployment containers as non-root
 
 ## Summary

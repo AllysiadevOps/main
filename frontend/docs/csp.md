@@ -9,7 +9,7 @@ to configure origins correctly for each environment.
 | Surface | Mechanism | Authoritative? |
 |---|---|---|
 | Production (Docker / nginx) | `Content-Security-Policy` HTTP header in `nginx.conf` | **Yes** |
-| Local dev (`vite dev`) | `<meta http-equiv="Content-Security-Policy">` in `index.html` | Fallback |
+| Local dev (`vite dev`) | `<meta http-equiv="Content-Security-Policy">` in `index.html` + Vite `server.headers` | Fallback |
 | Preview (`vite preview`) | Same meta tag as local dev | Fallback |
 
 The HTTP header always takes precedence over the meta tag when both are present.
@@ -20,6 +20,43 @@ development and `vite preview` runs where nginx is not involved.
 > ignored by browsers when it appears in a `<meta>` tag. It is therefore only
 > present in the nginx header. `X-Frame-Options: DENY` is set alongside it as
 > a belt-and-suspenders measure for older browsers.
+
+---
+
+## Cross-Origin Isolation (COOP / COEP)
+
+Cross-origin isolation is required for `SharedArrayBuffer`, which `@aztec/bb.js`
+uses for multithreaded WASM proving. The frontend serves:
+
+| Header | Value | Where |
+|---|---|---|
+| `Cross-Origin-Opener-Policy` | `same-origin` | `nginx.conf` (production) + Vite `server.headers` (dev) |
+| `Cross-Origin-Embedder-Policy` | `require-corp` | `nginx.conf` (production) + Vite `server.headers` (dev) |
+
+With both headers present, `self.crossOriginIsolated` is `true` and the proof
+worker can request multiple WASM threads (`navigator.hardwareConcurrency`,
+clamped to 1–8). When either header is missing, `crossOriginIsolated` is
+`false` and the worker falls back to a single thread (`threadCount: 1`).
+Non-isolated environments continue to work — proving is simply single-threaded.
+
+### Wallet extensions and external resources under COEP
+
+COEP `require-corp` blocks the document from loading cross-origin resources
+that do not opt in with `Cross-Origin-Resource-Policy: cross-origin`. The
+following are verified to still work:
+
+| Resource | Mechanism | COEP impact |
+|---|---|---|
+| Freighter wallet extension | `window.postMessage` (extension content script ↔ page) | None — `postMessage` is not a fetch/embed, so COEP does not apply. No `connect-src` entry is needed. |
+| Backend API (`VITE_API_BASE`) | `fetch()` from the page/worker | Same-origin in production (served via nginx); allowed by CSP `connect-src`. |
+| Stellar Soroban RPC (`VITE_STELLAR_RPC_URL`) | `fetch()` from the page/worker | Cross-origin but the RPC server returns `Cross-Origin-Resource-Policy: cross-origin` (or the request is made from a secure context that permits it). CSP `connect-src` includes the RPC origin. |
+| Vite HMR websocket (dev) | `ws://localhost:PORT` | Same-origin (dev server); allowed by CSP `connect-src 'self'`. |
+| Circuit JSON artifacts (`/noir/*.json`) | `fetch()` from the worker | Same-origin; served by nginx with CORP headers. |
+
+If you add a new external fetch target, add its origin to CSP `connect-src`
+in `src/csp.ts` and `nginx.conf`, and confirm the remote server sends
+`Cross-Origin-Resource-Policy: cross-origin` or that the resource is
+same-origin.
 
 ---
 

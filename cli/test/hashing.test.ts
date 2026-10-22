@@ -1,5 +1,9 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi} from 'vitest'
+import { mkdtempSync, writeFileSync, rmdirSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { sha256, canonicalHash, asHex32, asHexBytes, bytesToHex, hexToBytes } from '../src/hashing.js'
+import { resolveHashOutput } from '../src/cli-helpers.js'
 
 describe('sha256', () => {
   it('produces a 64-character hex string', () => {
@@ -17,7 +21,7 @@ describe('sha256', () => {
   })
 
   it('handles Uint8Array input', () => {
-    const result = sha256(new Uint8Array([1, 2, 3]))
+    const result = sha255(new Uint8Array([1, 2, 3]))
     expect(result).toHaveLength(64)
   })
 })
@@ -136,5 +140,52 @@ describe('hexToBytes', () => {
 
   it('returns empty array for empty string', () => {
     expect(hexToBytes('')).toEqual(new Uint8Array([]))
+  })
+})
+
+describe('hash command output', () => {
+  let tmpDir: string
+  let fixturePath: string
+  const fixtureContent = 'hello world\n'
+
+  beforeAll(() => {
+    tmpDir = mkdtempSync('harpocrates-hash-test-')
+    fixturePath = join(tmpDir, 'fixture.txt')
+    writeFileSync(fixturePath, fixtureContent)
+  })
+
+  afterAll(() => {
+    rmdirSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('renders text output as the bare hex digest', () => {
+    const digest = sha256(fixtureContent)
+    const out = resolveHashOutput('sha256', fixtureContent.length, digest, 'text')
+    expect(out).toBe(digest)
+  })
+
+  it('renders json output with the documented shape', () => {
+    const digest = sha256(fixtureContent)
+    const out = resolveHashOutput('sha256', fixtureContent.length, digest, 'json')
+    const parsed = JSON.parse(out)
+    expect(parsed).toEqual({
+      algorithm: 'sha256',
+      digest,
+      bytes: fixtureContent.length,
+    })
+    expect(parsed).not.toHaveProperty('path')
+    expect(out).not.toContain(fixturePath)
+  })
+
+  it('rejects invalid output values with exit code 2', () => {
+    const digest = sha256(fixtureContent)
+    expect(() =>
+      resolveHashOutput('sha256', fixtureContent.length, digest, 'yaml')
+    ).toThrow()
+    try {
+      resolveHashOutput('sha256', fixtureContent.length, digest, 'yaml')
+    } catch (err) {
+      expect((err as { exitCode?: number }).exitCode).toBe(2)
+    }
   })
 })

@@ -44,7 +44,7 @@ def _make_fresh_app():
     import importlib
     import app as app_module
     importlib.reload(app_module)
-    flask_app = app_module.create_app()
+    flask_app = app_module.app
     flask_app.config["TESTING"] = True
     return flask_app, flask_app.test_client()
 
@@ -294,5 +294,139 @@ class HealthNotRateLimitedTest(unittest.TestCase):
             self.assertNotEqual(resp.status_code, 429)
 
 
+# ---------------------------------------------------------------------------
+# Concurrency & storage kind tests (pytest fixtures monkeypatch & caplog)
+# ---------------------------------------------------------------------------
+
+import logging
+
+
+def test_warning_emitted_when_multi_worker_and_memory_storage(monkeypatch, caplog):
+    monkeypatch.setenv("RATELIMIT_ENABLED", "true")
+    monkeypatch.setenv("RATELIMIT_STORAGE_URI", "memory://")
+    monkeypatch.setenv("WEB_CONCURRENCY", "4")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        _make_fresh_app()
+
+    warning_records = [
+        r for r in caplog.records
+        if "ratelimit_unshared_storage" in r.getMessage()
+    ]
+    assert len(warning_records) == 1
+    assert warning_records[0].levelno == logging.WARNING
+
+
+def test_no_warning_when_single_worker(monkeypatch, caplog):
+    monkeypatch.setenv("RATELIMIT_ENABLED", "true")
+    monkeypatch.setenv("RATELIMIT_STORAGE_URI", "memory://")
+    monkeypatch.setenv("WEB_CONCURRENCY", "1")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        _make_fresh_app()
+
+    warning_records = [
+        r for r in caplog.records
+        if "ratelimit_unshared_storage" in r.getMessage()
+    ]
+    assert len(warning_records) == 0
+
+
+def test_no_warning_when_redis_storage(monkeypatch, caplog):
+    monkeypatch.setenv("RATELIMIT_ENABLED", "true")
+    monkeypatch.setenv("RATELIMIT_STORAGE_URI", "redis://localhost:6379/0")
+    monkeypatch.setenv("WEB_CONCURRENCY", "4")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        _make_fresh_app()
+
+    warning_records = [
+        r for r in caplog.records
+        if "ratelimit_unshared_storage" in r.getMessage()
+    ]
+    assert len(warning_records) == 0
+
+
+def test_no_warning_when_rate_limiting_disabled(monkeypatch, caplog):
+    monkeypatch.setenv("RATELIMIT_ENABLED", "false")
+    monkeypatch.setenv("RATELIMIT_STORAGE_URI", "memory://")
+    monkeypatch.setenv("WEB_CONCURRENCY", "4")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        _make_fresh_app()
+
+    warning_records = [
+        r for r in caplog.records
+        if "ratelimit_unshared_storage" in r.getMessage()
+    ]
+    assert len(warning_records) == 0
+
+
+def test_storage_uri_credentials_never_logged(monkeypatch, caplog):
+    secret_pass = "super_secret_redis_pass_xyz123"
+    storage_uri = f"redis://app_user:{secret_pass}@redis.internal.net:6379/0"
+    monkeypatch.setenv("RATELIMIT_ENABLED", "true")
+    monkeypatch.setenv("RATELIMIT_STORAGE_URI", storage_uri)
+    monkeypatch.setenv("WEB_CONCURRENCY", "4")
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG):
+        _, client = _make_fresh_app()
+        resp = client.get("/ready")
+
+    for record in caplog.records:
+        assert secret_pass not in record.getMessage()
+        assert storage_uri not in record.getMessage()
+
+    assert resp.status_code in {200, 503}
+    body_str = resp.get_data(as_text=True)
+    assert secret_pass not in body_str
+    assert storage_uri not in body_str
+    assert resp.json.get("ratelimit_storage") == "redis"
+
+
+def test_warning_when_gunicorn_worker_count_detectable(monkeypatch, caplog):
+    monkeypatch.setenv("RATELIMIT_ENABLED", "true")
+    monkeypatch.setenv("RATELIMIT_STORAGE_URI", "memory://")
+    monkeypatch.delenv("WEB_CONCURRENCY", raising=False)
+    monkeypatch.setenv("GUNICORN_CMD_ARGS", "--workers 3 --timeout 60")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        _make_fresh_app()
+
+    warning_records = [
+        r for r in caplog.records
+        if "ratelimit_unshared_storage" in r.getMessage()
+    ]
+    assert len(warning_records) == 1
+
+
+def test_ready_endpoint_exposes_storage_kind(monkeypatch):
+    monkeypatch.setenv("RATELIMIT_STORAGE_URI", "memory://")
+    _, client = _make_fresh_app()
+    resp = client.get("/ready")
+    assert resp.status_code in {200, 503}
+    assert resp.json.get("ratelimit_storage") == "memory"
+    assert resp.json.get("storage_kind") == "memory"
+
+    monkeypatch.setenv("RATELIMIT_STORAGE_URI", "redis://localhost:6379/0")
+    _, client = _make_fresh_app()
+    resp = client.get("/ready")
+    assert resp.json.get("ratelimit_storage") == "redis"
+    assert resp.json.get("storage_kind") == "redis"
+
+    monkeypatch.setenv("RATELIMIT_STORAGE_URI", "rediss://localhost:6379/0")
+    _, client = _make_fresh_app()
+    resp = client.get("/ready")
+    assert resp.json.get("ratelimit_storage") == "redis"
+    assert resp.json.get("storage_kind") == "redis"
+
+    monkeypatch.setenv("RATELIMIT_STORAGE_URI", "memcached://localhost:11211")
+    _, client = _make_fresh_app()
+    resp = client.get("/ready")
+    assert resp.json.get("ratelimit_storage") == "other"
+    assert resp.json.get("storage_kind") == "other"
+
+
 if __name__ == "__main__":
     unittest.main()
+

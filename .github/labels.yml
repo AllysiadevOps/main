@@ -162,3 +162,12 @@ labels:
   - name: "status/ready-for-review"
     color: "0e8a16"
     description: "Author considers the PR complete and ready for reviewer attention."
+
+  - name: "status/no-changelog"
+    color: "ededed"
+    description: "Bypasses the requirement for a changelog fragment on protocol changes."
+
+  - name: "no-changelog"
+    color: "ededed"
+    description: "Bypasses the requirement for a changelog fragment on protocol changes."
+

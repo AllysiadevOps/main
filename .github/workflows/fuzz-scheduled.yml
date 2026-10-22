@@ -30,7 +30,7 @@ jobs:
       ITERATIONS: ${{ inputs.iterations || '10000' }}
       FUZZ_SEED: ${{ inputs.seed || github.run_id }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -63,7 +63,7 @@ jobs:
       ITERATIONS: ${{ inputs.iterations || '10000' }}
       FUZZ_SEED: ${{ inputs.seed || github.run_id }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 

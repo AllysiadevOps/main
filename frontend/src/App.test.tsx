@@ -24,6 +24,15 @@ vi.mock('./stego', () => ({
   MalformedEvidenceError: class MalformedEvidenceError extends Error {},
 }))
 
+// StudioView and BatchVerificationWorkspace are lazy-loaded in App.tsx. In
+// jsdom the dynamic import resolves asynchronously, so tests must wait for the
+// Suspense fallback to be replaced before asserting on their contents.
+const waitForLazy = async () => {
+  await waitFor(() => {
+    expect(screen.queryByTestId('lazy-workspace-loading')).not.toBeInTheDocument()
+  })
+}
+
 describe('App', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
@@ -49,6 +58,7 @@ describe('App', () => {
 
     render(<App />)
     await user.click(screen.getByRole('button', { name: /begin evidence flow/i }))
+    await waitForLazy()
 
     expect(screen.getByRole('heading', { name: /evidence studio/i })).toBeInTheDocument()
     expect(screen.getByText(/upload evidence to begin/i)).toBeInTheDocument()
@@ -103,6 +113,7 @@ describe('App', () => {
 
     render(<App />)
     await user.click(screen.getByRole('button', { name: /batch workspace/i }))
+    await waitForLazy()
 
     expect(screen.getByRole('heading', { level: 2, name: /evidence batch verification workspace/i })).toBeInTheDocument()
   })
@@ -211,6 +222,7 @@ describe('App', () => {
     render(<App />)
 
     await user.click(screen.getByRole('button', { name: /begin evidence flow/i }))
+    await waitForLazy()
 
     const statusRegions = screen.getAllByRole('status')
     const srStatus = statusRegions.find((r) => r.classList.contains('sr-only'))
@@ -223,6 +235,7 @@ describe('App', () => {
     render(<App />)
 
     await user.click(screen.getByRole('button', { name: /begin evidence flow/i }))
+    await waitForLazy()
 
     const silentTab = screen.getByRole('button', { name: /silent witness/i })
     expect(silentTab).toHaveAttribute('aria-pressed', 'true')
@@ -236,6 +249,7 @@ describe('App', () => {
     render(<App />)
 
     await user.click(screen.getByRole('button', { name: /begin evidence flow/i }))
+    await waitForLazy()
 
     const studio = screen.getByRole('region', { name: /evidence studio workspace/i })
     expect(studio).not.toHaveAttribute('aria-busy')

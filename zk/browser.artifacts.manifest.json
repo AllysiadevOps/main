@@ -23,7 +23,10 @@
   "normalization_policy_sha256": "ab0d2c5df0ed8fa307d26a748fbbca0d6b671e1fa228e491a8149b5d305565b5",
   "skipped": [
     "frontend/public/noir/silent_witness_aggregator.json",
-    "frontend/public/noir/silent_witness_aggregator_helper.json"
+    "frontend/public/noir/silent_witness_aggregator_helper.json",
+    "frontend/public/noir/selective_disclosure.json",
+    "frontend/public/noir/redacted_ancestry.json",
+    "frontend/public/noir/redacted_ancestry_helper.json"
   ],
   "toolchain": {
     "barretenberg": "0.87.0",

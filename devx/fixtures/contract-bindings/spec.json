@@ -1,0 +1,6 @@
+{
+  "functions": [
+    {"name": "get_proof_status", "args": ["proof_id"], "returns": "ProofVerificationStatus"},
+    {"name": "get_by_video", "args": ["video_hash"], "returns": "Option<ProofRecord>"}
+  ]
+}

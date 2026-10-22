@@ -10,6 +10,7 @@ on:
       - 'backend/**'
       - 'contracts/**'
       - 'zk/**'
+      - 'changelog.d/**'
       - '.github/labels.yml'
       - '.github/labeler.yml'
       - '.github/dependabot.yml'
@@ -41,7 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
@@ -65,5 +66,12 @@ jobs:
             .github/labeler.yml .github/labels.yml
       - name: Validate Dependabot configuration
         run: python3 devx/dependabot_config.py --check .github/dependabot.yml
+      - name: Check changelog fragments
+        if: github.event_name == 'pull_request'
+        env:
+          PR_LABELS: ${{ toJson(github.event.pull_request.labels) }}
+        run: |
+          python3 devx/check_changelog_fragment.py --labels "$PR_LABELS"
       - name: Exercise negative release-gate paths
         run: python3 -m unittest discover -s devx -p 'test_*.py' -v
+

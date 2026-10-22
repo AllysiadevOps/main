@@ -41,7 +41,7 @@ describe('BatchVerificationWorkspace UI Component', () => {
     )
 
     const file1 = new File(['evidence sample content'], 'evidence1.mp4', { type: 'video/mp4' })
-    const input = screen.getByLabelText(/Drop evidence files or standalone JSON receipts/i) as HTMLInputElement
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
 
     fireEvent.change(input, { target: { files: [file1] } })
 
@@ -152,7 +152,7 @@ describe('BatchVerificationWorkspace UI Component', () => {
 
     // Queue a file and start the batch so isRunning becomes true
     const file1 = new File(['data'], 'clip.mp4', { type: 'video/mp4' })
-    const input = screen.getByLabelText(/Drop evidence files or standalone JSON receipts/i) as HTMLInputElement
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
     fireEvent.change(input, { target: { files: [file1] } })
 
     await waitFor(() => screen.getByRole('button', { name: /Verify Batch \(1\)/i }))

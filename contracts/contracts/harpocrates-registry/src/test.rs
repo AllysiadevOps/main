@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use soroban_sdk::String;
 use soroban_sdk::{
     contract, contractimpl,
     testutils::{Address as _, Events as _, Ledger},
@@ -82,8 +83,40 @@ fn silent_public_inputs(
     Bytes::from_array(env, &bytes)
 }
 
+fn browser_silent_public_inputs(
+    env: &Env,
+    video_hash: &BytesN<32>,
+    credential_root: &BytesN<32>,
+    nullifier: &BytesN<32>,
+) -> Bytes {
+    let mut video_hash_bytes = [0u8; 32];
+    video_hash.copy_into_slice(&mut video_hash_bytes);
+
+    let mut credential_root_bytes = [0u8; 32];
+    credential_root.copy_into_slice(&mut credential_root_bytes);
+
+    let mut nullifier_bytes = [0u8; 32];
+    nullifier.copy_from_slice(&mut nullifier_bytes);
+
+    // 4 public inputs × 32 bytes = 128 bytes
+    let mut bytes = [0u8; 128];
+    bytes[16..32].copy_from_slice(&video_hash_bytes[..16]);
+    bytes[48..64].copy_from_slice(&video_hash_bytes[16..]);
+    bytes[64..96].copy_from_slice(&credential_root_bytes);
+    bytes[96..128].copy_from_slice(&nullifier_bytes);
+
+    Bytes::from_array(env, &bytes)
+}
+
 fn expected_domain_tag_test(env: &Env) -> BytesN<32> {
     expected_domain_tag(env)
+}
+
+#[test]
+fn returns_cargo_package_version() {
+    let env = Env::default();
+    let expected = String::from_str(&env, env!("CARGO_PKG_VERSION"));
+    assert_eq!(version(env), expected);
 }
 
 #[test]
@@ -220,6 +253,38 @@ fn registers_silent_witness_through_external_verifier() {
     assert_eq!(record.nullifier, Some(nullifier.clone()));
     assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier));
     // Non-batch registration has batch_size = 0
+    assert_eq!(record.batch_size, 0);
+}
+
+#[test]
+fn registers_silent_witness_browser_128_byte_frame() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let verifier_id = env.register(MockNoirVerifier, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let video_hash = bytes32(&env, 41);
+    let credential_root = bytes32(&env, 9);
+    let nullifier = bytes32(&env, 42);
+
+    client.init(&admin);
+    client.set_verifier(&admin, &verifier_id);
+    client.add_credential_root(&admin, &credential_root, &bytes32(&env, 45));
+
+    let record = client.register_anonymous_verified(
+        &video_hash,
+        &bytes32(&env, 43),
+        &bytes32(&env, 44),
+        &browser_silent_public_inputs(&env, &video_hash, &credential_root, &nullifier),
+        &proof_bytes(&env),
+    );
+
+    assert_eq!(record.tier, TIER_SILENT_WITNESS);
+    assert_eq!(record.video_hash, video_hash);
+    assert_eq!(record.nullifier, Some(nullifier.clone()));
+    assert!(client.has_nullifier(&client.get_verifier().unwrap(), &nullifier));
     assert_eq!(record.batch_size, 0);
 }
 

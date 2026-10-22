@@ -14,9 +14,11 @@ double-build check, and how to operate and roll back the pipeline.
 | Path | Role |
 | --- | --- |
 | `zk/toolchain.lock.json` | Pinned toolchain versions, hermetic environment, normalization policy, declared artifacts, circuit-coverage invariant, resource limits |
+| `zk/tools/build_circuits.py` | Unified driver for circuit building, proof generation, hex export, and Soroban verifier key preparation |
 | `zk/tools/artifact_manifest.py` | Normalizes, digests, writes, verifies, diffs, and coverage-checks |
 | `zk/tools/test_artifact_manifest.py` | Unit tests for normalization, the state machine, drift detection, the coverage gate, and the privacy properties |
-| `zk/noir/scripts/reproducible-build.sh` | Hermetic double-build driver |
+| `zk/tools/test_build_circuits.py` | Unit tests for circuit build tooling, argument parsing, and toolchain verification |
+| `zk/noir/scripts/reproducible-build.sh` | Hermetic double-build driver wrapper around `build_circuits.py build all` |
 | `zk/artifacts.manifest.json` | Committed manifest (written by a build; absent until first published) |
 | `zk/browser.artifacts.manifest.json` | Committed digests for published browser ACIR under `frontend/public/noir/` |
 | `zk/circuit.provenance.json` | Published digests of lock-declared circuit sources (and declared artifact slots) |
@@ -160,16 +162,30 @@ Then:
 
 ```bash
 # Full double build: build twice from clean, compare, write the manifest.
+python zk/tools/build_circuits.py build
 zk/noir/scripts/reproducible-build.sh
 
 # One build, write a manifest.
+python zk/tools/build_circuits.py build --single
 zk/noir/scripts/reproducible-build.sh --single
 
 # One build, compare against the committed manifest.
+python zk/tools/build_circuits.py build --verify
 zk/noir/scripts/reproducible-build.sh --verify
 
 # Coverage gate only — no nargo/bb required.
+python zk/tools/build_circuits.py build --check-coverage
 zk/noir/scripts/reproducible-build.sh --check-coverage
+
+# Build an individual circuit
+python zk/tools/build_circuits.py build silent_witness --prove
+
+# Generate a proof with custom inputs
+python zk/tools/build_circuits.py generate silent_witness <hash> <cred_secret> <null_secret>
+
+# Export hex artifacts or prepare for Soroban
+python zk/tools/build_circuits.py export silent_witness
+python zk/tools/build_circuits.py prepare-soroban silent_witness
 
 # Tooling only — no toolchain required.
 python -m pytest zk/tools -q
@@ -422,5 +438,5 @@ with `write-browser`.
 - The coverage gate is name-based: it proves every package under `zk/noir/` is
   declared, not that a declared circuit is the one the verifier contract expects.
   Closing that last mile — comparing the circuit's VK digest to the deployed
-  verifier contract — is [OR-5](../../THREAT_MODEL.md#or-5-circuit-artifact-version-alignment)
+  verifier contract — is [OR-5](../THREAT_MODEL.md#or-5-circuit-artifact-version-alignment)
   and is still open.

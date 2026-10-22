@@ -158,6 +158,7 @@ export type RegistryMethod =
   | 'add_schema'
   | 'get_schema'
   | 'get_verifier_state'
+  | 'get_open_dispute_count'
 
 export type ProofHistoryEntry = {
   action: number

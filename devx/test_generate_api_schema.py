@@ -54,8 +54,13 @@ def test_route():
             schema_file = schemas_dir / "test.json"
             schema_file.write_text('{invalid json', encoding="utf-8")
             
-            # Should not crash, just ignores malformed
-            schema = generate_api_schema.generate_schema(app_py, schemas_dir)
+            # Non-lenient should raise SchemaError
+            with self.assertRaises(generate_api_schema.SchemaError) as ctx:
+                generate_api_schema.generate_schema(app_py, schemas_dir)
+            self.assertTrue(any("test.json" in err for err in ctx.exception.errors))
+
+            # Lenient should ignore malformed
+            schema = generate_api_schema.generate_schema(app_py, schemas_dir, lenient=True)
             self.assertNotIn("test", schema["components"]["schemas"])
 
     def test_oversized_json_schema(self):
@@ -72,9 +77,75 @@ def test_route():
                 f.write(b'{"schemaHash": "123"}')
                 f.write(b' ' * (1024 * 1024 + 10))
             
-            # Should ignore oversized
-            schema = generate_api_schema.generate_schema(app_py, schemas_dir)
+            # Non-lenient should raise SchemaError
+            with self.assertRaises(generate_api_schema.SchemaError) as ctx:
+                generate_api_schema.generate_schema(app_py, schemas_dir)
+            self.assertTrue(any("test.json" in err for err in ctx.exception.errors))
+
+            # Lenient should ignore oversized
+            schema = generate_api_schema.generate_schema(app_py, schemas_dir, lenient=True)
             self.assertNotIn("123", schema["components"]["schemas"])
+
+    def test_non_object_json_schema(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            app_py = tmp / "app.py"
+            app_py.write_text("app = 1", encoding="utf-8")
+            
+            schemas_dir = tmp / "schemas"
+            schemas_dir.mkdir()
+            schema_file = schemas_dir / "array.json"
+            schema_file.write_text('[1, 2, 3]', encoding="utf-8")
+            
+            # Non-lenient should raise SchemaError
+            with self.assertRaises(generate_api_schema.SchemaError) as ctx:
+                generate_api_schema.generate_schema(app_py, schemas_dir)
+            self.assertTrue(any("array.json" in err for err in ctx.exception.errors))
+
+            # Lenient should ignore
+            schema = generate_api_schema.generate_schema(app_py, schemas_dir, lenient=True)
+            self.assertEqual(schema["components"]["schemas"], {})
+
+    def test_missing_schema_hash(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            app_py = tmp / "app.py"
+            app_py.write_text("app = 1", encoding="utf-8")
+            
+            schemas_dir = tmp / "schemas"
+            schemas_dir.mkdir()
+            schema_file = schemas_dir / "missing_hash.json"
+            schema_file.write_text('{"type": "object"}', encoding="utf-8")
+            
+            # Non-lenient should raise SchemaError
+            with self.assertRaises(generate_api_schema.SchemaError) as ctx:
+                generate_api_schema.generate_schema(app_py, schemas_dir)
+            self.assertTrue(any("missing_hash.json" in err for err in ctx.exception.errors))
+
+            # Lenient should ignore
+            schema = generate_api_schema.generate_schema(app_py, schemas_dir, lenient=True)
+            self.assertEqual(schema["components"]["schemas"], {})
+
+    def test_multiple_schema_errors_collected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            app_py = tmp / "app.py"
+            app_py.write_text("app = 1", encoding="utf-8")
+            
+            schemas_dir = tmp / "schemas"
+            schemas_dir.mkdir()
+            (schemas_dir / "bad1.json").write_text("{bad", encoding="utf-8")
+            (schemas_dir / "bad2.json").write_text("[]", encoding="utf-8")
+            (schemas_dir / "bad3.json").write_text("{}", encoding="utf-8")
+            
+            with self.assertRaises(generate_api_schema.SchemaError) as ctx:
+                generate_api_schema.generate_schema(app_py, schemas_dir)
+            errors = ctx.exception.errors
+            self.assertEqual(len(errors), 3)
+            self.assertTrue(any("bad1.json" in err for err in errors))
+            self.assertTrue(any("bad2.json" in err for err in errors))
+            self.assertTrue(any("bad3.json" in err for err in errors))
 
 if __name__ == '__main__':
     unittest.main()
+

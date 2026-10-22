@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 
 interface DryRunInput {
   metadata: {
@@ -36,14 +37,14 @@ function validateMetadata(metadata: any): void {
   if (typeof metadata !== 'object' || metadata === null) {
     throw new Error('Metadata must be an object');
   }
-  
+
   const requiredKeys = ['version', 'timestamp', 'hash'];
   for (const key of requiredKeys) {
     if (!(key in metadata)) {
       throw new Error(`Missing required metadata key: ${key}`);
     }
   }
-  
+
   if (!SUPPORTED_VERSIONS.includes(metadata.version)) {
     throw new Error(`Unsupported version: ${metadata.version}`);
   }
@@ -69,18 +70,20 @@ function validatePayloadSize(payload: string): void {
  * @returns Hex string of the hash
  */
 function computeHash(data: string): string {
-  const crypto = require('crypto');
   return crypto.createHash('sha256').update(data).digest('hex');
 }
 
 /**
- * Simulates dependency checks.
+ * Checks that dependency identifiers are well-formed.
  * @param deps - List of dependencies
- * @returns True if dependencies are satisfied
+ * @throws Error if a dependency is invalid
  */
-function checkDependencies(deps: string[]): boolean {
-  // In real implementation, this would check contract states
-  return true;
+function checkDependencies(deps: string[]): void {
+  for (const dep of deps) {
+    if (typeof dep !== 'string' || dep.trim().length === 0) {
+      throw new Error('Dependency check failed');
+    }
+  }
 }
 
 /**
@@ -92,19 +95,17 @@ export function runDryRun(input: DryRunInput): DryRunResult {
   try {
     // Validate metadata
     validateMetadata(input.metadata);
-    
+
     // Validate payload size
     validatePayloadSize(input.payload);
-    
+
     // Compute integrity hash
     const payloadHash = computeHash(input.payload);
-    
+
     // Check dependencies
     const deps = input.dependencies || [];
-    if (!checkDependencies(deps)) {
-      throw new Error('Dependency check failed');
-    }
-    
+    checkDependencies(deps);
+
     // Return success result
     return {
       status: 'success',
@@ -119,7 +120,7 @@ export function runDryRun(input: DryRunInput): DryRunResult {
     // Return privacy-safe error response
     let errorType = 'unknown';
     let message = 'Internal error occurred';
-    
+
     if (error.message.includes('Missing required metadata key')) {
       errorType = 'malformed_input';
       message = 'Input validation failed';
@@ -133,7 +134,7 @@ export function runDryRun(input: DryRunInput): DryRunResult {
       errorType = 'dependency_failure';
       message = 'Dependency check failed';
     }
-    
+
     return {
       status: 'error',
       error_type: errorType,
@@ -157,7 +158,7 @@ export function setupDryRunCommand(program: Command): void {
     .option('-h, --hash <string>', 'Metadata hash')
     .action(async (options: any) => {
       let input: DryRunInput;
-      
+
       try {
         if (options.file) {
           const filePath = path.resolve(options.file);
@@ -176,11 +177,12 @@ export function setupDryRunCommand(program: Command): void {
         } else {
           console.error('Error: Either --file or --payload must be provided');
           process.exit(1);
+          return;
         }
-        
+
         const result = runDryRun(input);
         console.log(JSON.stringify(result, null, 2));
-        
+
         if (result.status === 'success') {
           process.exit(0);
         } else {

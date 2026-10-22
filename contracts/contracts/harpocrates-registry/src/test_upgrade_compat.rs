@@ -143,7 +143,8 @@ fn upgrade_compat_stamps_legacy_missing_schema_version() {
         SchemaVersion::V2 as u32
     );
     assert_eq!(
-        after, before + 1,
+        after,
+        before + 1,
         "legacy stamp must emit SchemaUpgraded due to V2 migration"
     );
 }

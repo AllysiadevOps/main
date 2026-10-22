@@ -16,9 +16,10 @@ visible in one place and lets one script enforce it across languages.
 ```
 
 - `report_format` is `coverage_py` (Python `coverage json` output, as
-  produced by pytest-cov) or `istanbul_summary` (vitest/istanbul
+  produced by pytest-cov), `istanbul_summary` (vitest/istanbul
   `coverage-summary.json`, produced by vitest's `--coverage` with the
-  `json-summary` reporter).
+  `json-summary` reporter), or `llvm_cov_json` (`cargo llvm-cov --json`
+  output).
 - `thresholds` maps a metric name to a minimum percentage (0-100).
 
 ## Checking a report locally
@@ -29,6 +30,9 @@ python3 devx/coverage/check_coverage.py --workspace backend --report backend/cov
 
 # frontend / cli (after `vitest run --coverage` with the json-summary reporter)
 python3 devx/coverage/check_coverage.py --workspace frontend --report frontend/coverage/coverage-summary.json
+
+# contracts (after `cargo llvm-cov --json --output-path coverage.json` in contracts/)
+python3 devx/coverage/check_coverage.py --workspace contracts --report contracts/coverage.json
 
 # validate that every thresholds file itself is well-formed, without a report
 python3 devx/coverage/check_coverage.py --lint-thresholds

@@ -3,9 +3,9 @@ flask-cors==6.0.5
 python-dotenv==1.2.3
 psycopg[binary]==3.3.6
 numpy==2.5.3
-gunicorn==23.0.0
+gunicorn==26.2.0
 cryptography==50.0.1
 flask-limiter==4.1.1
-opentelemetry-api==1.34.1
+opentelemetry-api==1.45.0
 opentelemetry-sdk==1.34.1
-opentelemetry-exporter-otlp-proto-http==1.34.1
+opentelemetry-exporter-otlp-proto-http==1.45.0

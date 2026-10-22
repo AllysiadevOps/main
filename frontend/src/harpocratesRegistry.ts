@@ -29,7 +29,6 @@ import type {
   RegistryMethod,
   TxState,
 } from './stellarTypes'
-import { assertReleaseCompatibility } from './releaseCompatibility'
 
 const RPC_URL = import.meta.env.VITE_STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org'
 

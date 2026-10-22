@@ -405,3 +405,74 @@ describe('index.html – CSP meta tag for local dev', () => {
     expect(metaMatch![0]).not.toContain('frame-ancestors')
   })
 })
+
+// ─── 9. nginx.conf – COOP/COEP headers for cross-origin isolation ─────────────
+
+describe('nginx.conf – Cross-Origin-Opener-Policy / Cross-Origin-Embedder-Policy', () => {
+  const nginxConf = readFileSync(
+    resolve(__dirname, '..', 'nginx.conf'),
+    'utf8',
+  )
+
+  it('sets Cross-Origin-Opener-Policy: same-origin in the server block', () => {
+    expect(nginxConf).toMatch(
+      /add_header\s+Cross-Origin-Opener-Policy\s+"same-origin"\s+always/i,
+    )
+  })
+
+  it('sets Cross-Origin-Embedder-Policy: require-corp in the server block', () => {
+    expect(nginxConf).toMatch(
+      /add_header\s+Cross-Origin-Embedder-Policy\s+"require-corp"\s+always/i,
+    )
+  })
+
+  it('repeats COOP in the .wasm location block', () => {
+    const wasmIndex = nginxConf.indexOf('location ~* \\.wasm$')
+    const nextLocation = nginxConf.indexOf('location ~*', wasmIndex + 1)
+    const wasmBlock = nextLocation === -1 ? nginxConf.slice(wasmIndex) : nginxConf.slice(wasmIndex, nextLocation)
+    expect(wasmBlock).toContain('Cross-Origin-Opener-Policy')
+  })
+
+  it('repeats COEP in the .wasm location block', () => {
+    const wasmIndex = nginxConf.indexOf('location ~* \\.wasm$')
+    const nextLocation = nginxConf.indexOf('location ~*', wasmIndex + 1)
+    const wasmBlock = nextLocation === -1 ? nginxConf.slice(wasmIndex) : nginxConf.slice(wasmIndex, nextLocation)
+    expect(wasmBlock).toContain('Cross-Origin-Embedder-Policy')
+  })
+
+  it('repeats COOP in the static assets location block', () => {
+    const assetsIndex = nginxConf.indexOf('location ~* \\.(js|css|')
+    const nextLocation = nginxConf.indexOf('location ~*', assetsIndex + 1)
+    const assetsBlock = nextLocation === -1 ? nginxConf.slice(assetsIndex) : nginxConf.slice(assetsIndex, nextLocation)
+    expect(assetsBlock).toContain('Cross-Origin-Opener-Policy')
+  })
+
+  it('repeats COEP in the static assets location block', () => {
+    const assetsIndex = nginxConf.indexOf('location ~* \\.(js|css|')
+    const nextLocation = nginxConf.indexOf('location ~*', assetsIndex + 1)
+    const assetsBlock = nextLocation === -1 ? nginxConf.slice(assetsIndex) : nginxConf.slice(assetsIndex, nextLocation)
+    expect(assetsBlock).toContain('Cross-Origin-Embedder-Policy')
+  })
+
+  it('repeats COOP in the SPA fallback location block', () => {
+    const spaIndex = nginxConf.indexOf('location /')
+    const spaBlock = nginxConf.slice(spaIndex)
+    expect(spaBlock).toContain('Cross-Origin-Opener-Policy')
+  })
+
+  it('repeats COEP in the SPA fallback location block', () => {
+    const spaIndex = nginxConf.indexOf('location /')
+    const spaBlock = nginxConf.slice(spaIndex)
+    expect(spaBlock).toContain('Cross-Origin-Embedder-Policy')
+  })
+
+  it('uses the always flag on both COOP and COEP headers', () => {
+    // Each header appears 4 times (server + 3 location blocks), always with 'always' flag.
+    const coopMatches = nginxConf.match(/Cross-Origin-Opener-Policy[^;]*always/g)
+    const coepMatches = nginxConf.match(/Cross-Origin-Embedder-Policy[^;]*always/g)
+    expect(coopMatches).not.toBeNull()
+    expect(coopMatches!.length).toBeGreaterThanOrEqual(4)
+    expect(coepMatches).not.toBeNull()
+    expect(coepMatches!.length).toBeGreaterThanOrEqual(4)
+  })
+})

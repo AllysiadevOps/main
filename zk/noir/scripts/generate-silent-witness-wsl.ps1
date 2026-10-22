@@ -11,7 +11,9 @@ param(
   [ValidatePattern('^[0-9]+$')]
   [string] $NullifierSecret,
 
-  [string] $OutputDir = ""
+  [string] $OutputDir = "",
+  [string] $VerifierScope = "0",
+  [int] $Epoch = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,15 +46,9 @@ if ($OutputDir) {
   $wslOutput = "/mnt/$outDrive/$outRest"
 }
 
-$args = @(
-  "chmod +x '$wslRepo/zk/noir/tools/jq' '$wslRepo/zk/noir/scripts/generate-silent-witness.sh'",
-  "export PATH='$wslRepo/zk/noir/tools':/home/enliven/.nargo/bin:/home/enliven/.bb:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-  "cd '$wslRepo'",
-  "bash zk/noir/scripts/generate-silent-witness.sh '$VideoHash' '$CredentialSecret' '$NullifierSecret'"
-)
-
+$cmd = "chmod +x '$wslRepo/zk/noir/tools/jq'; export PATH='$wslRepo/zk/noir/tools':/home/enliven/.nargo/bin:/home/enliven/.bb:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; cd '$wslRepo'; python3 zk/tools/build_circuits.py generate silent_witness '$VideoHash' '$CredentialSecret' '$NullifierSecret'"
 if ($wslOutput) {
-  $args[-1] = "$($args[-1]) '$wslOutput'"
+  $cmd += " '$wslOutput'"
 }
 
-wsl bash -lc ($args -join "; ")
+wsl bash -lc $cmd

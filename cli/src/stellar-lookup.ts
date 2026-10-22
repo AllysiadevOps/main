@@ -35,9 +35,44 @@ export type StellarLookupOptions = {
   networkPassphrase?: string
   /** Source account for simulation. If omitted the simulation will likely fail. */
   sourceAddress?: string
+  /** Timeout in milliseconds for each RTC call (defaults to 15000). */
+  timeoutMs?: number
+}
+
+/**
+ * Error thrown when an RPC call does not complete within the configured timeout.
+ */
+export class LookupTimeoutError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'LookupTimeoutError'
+  }
 }
 
 const DEFAULT_RPC_URL = 'https://soroban-testnet.stellar.org'
+const DEFAULT_TIMEOUT_MS = 15000
+
+/**
+ * Race a promise against a timer, rejecting with a typed LookupTimeoutError.
+ */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new LookupTimeoutError(`${label} timed out after ${timeoutMs}ms`))
+    }, timeoutMs)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (err) => {
+        clearTimeout(timer)
+        reject(err)
+      },
+    )
+  })
+}
+
 const DEFAULT_SIMULATION_SOURCE = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF'
 
 /**
@@ -177,6 +212,7 @@ export async function lookupByVideoHash(
   const rpcUrl = resolveRpcUrl(options.rpcUrl)
   const networkPassphrase = options.networkPassphrase ?? Networks.TESTNET
   const source = options.sourceAddress
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
   if (!source) {
     throw new Error(
@@ -186,7 +222,7 @@ export async function lookupByVideoHash(
   }
 
   const server = new rpc.Server(rpcUrl)
-  const account = await server.getAccount(source)
+  const account = await withTimeout(server.getAccount(source), timeoutMs, 'getAccount')
   const contract = new Contract(contractId)
 
   // Encode the 32-byte video hash as scBytes32 expected by Soroban.
@@ -200,7 +236,7 @@ export async function lookupByVideoHash(
     .setTimeout(30)
     .build()
 
-  const simulation = await server.simulateTransaction(transaction)
+  const simulation = await withTimeout(server.simulateTransaction(transaction), timeoutMs, 'simulateTransaction')
 
   if (rpc.Api.isSimulationError(simulation)) {
     throw new Error(simulation.error)
@@ -289,9 +325,13 @@ async function simulateRead(
   args: unknown[],
   options: StellarLookupOptions,
 ): Promise<any> {
-  const rpcUrl = options.rpcUrl ?? DEFAULT_RPC_URL
+  const rpcUrl = resolveRpcUrl(options.rpcUrl)
   const networkPassphrase = options.networkPassphrase ?? Networks.TESTNET
   const source = options.sourceAddress
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+
+  const contract = new Contract(contractId)
+  const operation = contract.call(method, ...(args as Parameters<typeof contract.call>[1]))
 
   if (!source) {
     throw new Error(
@@ -301,18 +341,17 @@ async function simulateRead(
   }
 
   const server = new rpc.Server(rpcUrl)
-  const account = await server.getAccount(source)
-  const contract = new Contract(contractId)
+  const account = await withTimeout(server.getAccount(source), timeoutMs, 'getAccount')
 
   const transaction = new TransactionBuilder(account, {
     fee: BASE_FEE,
     networkPassphrase,
   })
-    .addOperation(contract.call(method, ...args))
+    .addOperation(operation)
     .setTimeout(30)
     .build()
 
-  const simulation = await server.simulateTransaction(transaction)
+  const simulation = await withTimeout(server.simulateTransaction(transaction), timeoutMs, 'simulateTransaction')
 
   if (rpc.Api.isSimulationError(simulation)) {
     throw new Error(simulation.error)
@@ -341,8 +380,9 @@ export async function verifyTransaction(
   options: StellarLookupOptions = {},
 ): Promise<TransactionVerification> {
   const rpcUrl = resolveRpcUrl(options.rpcUrl)
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const server = new rpc.Server(rpcUrl)
-  const response = await server.getTransaction(txHash)
+  const response = await withTimeout(server.getTransaction(txHash), timeoutMs, 'getTransaction')
 
   switch (response.status) {
     case rpc.Api.GetTransactionStatus.NOT_FOUND:
@@ -417,9 +457,10 @@ export async function getLineage(
   outputDigest: string,
   options: StellarLookupOptions = {},
 ): Promise<LineageRecord | null> {
-  const rpcUrl = options.rpcUrl ?? DEFAULT_RPC_URL
+  const rpcUrl = resolveRpcUrl(options.rpcUrl)
   const networkPassphrase = options.networkPassphrase ?? Networks.TESTNET
   const source = options.sourceAddress
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
   if (!source) {
     throw new Error(
@@ -429,7 +470,7 @@ export async function getLineage(
   }
 
   const server = new rpc.Server(rpcUrl)
-  const account = await server.getAccount(source)
+  const account = await withTimeout(server.getAccount(source), timeoutMs, 'getAccount')
   const contract = new Contract(contractId)
 
   const outputDigestScVal = nativeToScVal(hexToBytes(asHex32(outputDigest, 'outputDigest')))
@@ -442,7 +483,7 @@ export async function getLineage(
     .setTimeout(30)
     .build()
 
-  const simulation = await server.simulateTransaction(transaction)
+  const simulation = await withTimeout(server.simulateTransaction(transaction), timeoutMs, 'simulateTransaction')
 
   if (rpc.Api.isSimulationError(simulation)) {
     throw new Error(simulation.error)
@@ -456,109 +497,49 @@ export async function getLineage(
   if (!native) return null
 
   const parentProofIds: string[] = Array.isArray(native.parent_proof_ids)
-    ? native.parent_proof_ids.map((id: Uint8Array | Buffer | string) =>
-        typeof id === 'string' ? id.toLowerCase() : bytesToHex(id),
-      )
+    ? native.parent_proof_ids.map((id: unknown) => String(id))
     : []
-
   const parentCommitments: string[] = Array.isArray(native.parent_commitments)
-    ? native.parent_commitments.map((c: Uint8Array | Buffer | string) =>
-        typeof c === 'string' ? c.toLowerCase() : bytesToHex(c),
-      )
+    ? native.parent_commitments.map((c: unknown) => bytesToHex(c as Uint8Array))
     : []
 
   return {
     parentProofIds,
     parentCommitments,
-    manifestDigest: typeof native.manifest_digest === 'string' ? native.manifest_digest.toLowerCase() : bytesToHex(native.manifest_digest),
-    actor: native.actor?.toString?.() ?? String(native.actor),
-    operationType: String(native.operation_type),
-    outputDigest: typeof native.output_digest === 'string' ? native.output_digest.toLowerCase() : bytesToHex(native.output_digest),
-    depth: Number(native.depth),
+    manifestDigest: bytesToHex(native.manifest_digest),
+    actor: String(native.actor ?? ''),
+    operationType: String(native.operation_type ?? ''),
+    outputDigest: bytesToHex(native.output_digest),
+    depth: Number(native.depth ?? 0),
   }
 }
 
 /**
- * Retrieve the status of a registered proof ID, checking both proof status and open disputes.
+ * Resolve the current proof status from the registry.
+ * Returns 'missing' when the proof is not found on-chain.
  */
 export async function getProofStatus(
   contractId: string,
-  proofId: string,
+  videoHash: string,
   options: StellarLookupOptions = {},
 ): Promise<ProofStatus> {
-  const rpcUrl = options.rpcUrl ?? DEFAULT_RPC_URL
-  const networkPassphrase = options.networkPassphrase ?? Networks.TESTNET
-  const source = options.sourceAddress
+  const native = await simulateRead(
+    contractId,
+    'get_proof_status',
+    [nativeToScVal(hexToBytes(asHex32(videoHash, 'videoHash')))],
+    options,
+  )
 
-  if (!source) {
-    throw new Error(
-      'A source address is required for simulation. ' +
-        'Pass --source-address or set HARPOCRATES_SOURCE_ADDRESS env var.',
-    )
+  if (native === null || native === undefined) return 'missing'
+
+  const value = typeof native === 'string' ? native : String(native)
+  switch (value) {
+    case 'valid':
+    case 'revoked':
+    case 'expired':
+    case 'disputed':
+      return value
+    default:
+      return 'missing'
   }
-
-  const server = new rpc.Server(rpcUrl)
-  const account = await server.getAccount(source)
-  const contract = new Contract(contractId)
-
-  const proofIdScVal = nativeToScVal(hexToBytes(asHex32(proofId, 'proofId')))
-
-  // Simulate get_proof_status
-  const txStatus = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase,
-  })
-    .addOperation(contract.call('get_proof_status', proofIdScVal))
-    .setTimeout(30)
-    .build()
-
-  const simStatus = await server.simulateTransaction(txStatus)
-  if (rpc.Api.isSimulationError(simStatus)) {
-    throw new Error(simStatus.error)
-  }
-
-  let status: ProofStatus = 'missing'
-  if (rpc.Api.isSimulationSuccess(simStatus) || rpc.Api.isSimulationRestore(simStatus)) {
-    const native = simStatus.result?.retval ? scValToNative(simStatus.result.retval) : null
-    if (native !== null && native !== undefined) {
-      const raw = String(native).toLowerCase()
-      if (raw === 'valid' || raw === '0') {
-        status = 'valid'
-      } else if (raw === 'revoked' || raw === '1') {
-        status = 'revoked'
-      } else if (raw === 'expired' || raw === '2') {
-        status = 'expired'
-      } else if (raw === 'notfound' || raw === '3') {
-        status = 'missing'
-      }
-    }
-  }
-
-  if (status !== 'valid') {
-    return status
-  }
-
-  // Check if there are any open disputes
-  try {
-    const txDispute = new TransactionBuilder(account, {
-      fee: BASE_FEE,
-      networkPassphrase,
-    })
-      .addOperation(contract.call('get_open_dispute_count', proofIdScVal))
-      .setTimeout(30)
-      .build()
-
-    const simDispute = await server.simulateTransaction(txDispute)
-    if (rpc.Api.isSimulationSuccess(simDispute) || rpc.Api.isSimulationRestore(simDispute)) {
-      const nativeCount = simDispute.result?.retval ? scValToNative(simDispute.result.retval) : null
-      if (nativeCount !== null && nativeCount !== undefined && Number(nativeCount) > 0) {
-        return 'disputed'
-      }
-    }
-  } catch {
-    // If get_open_dispute_count fails or is unsupported, keep the status from get_proof_status
-  }
-
-  return status
 }
-

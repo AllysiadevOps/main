@@ -1,6 +1,6 @@
 # Redacted Derivative Ancestry - Circuit Specification
 
-**Status:** Active (`redacted_ancestry/v1`)
+**Status:** Prototype only (`redacted_ancestry/v1`; not enabled by default)
 **Issue:** #356
 **Compatibility:** Additive. Does not alter `silent_witness/v1`,
 `revocation_witness/v1`, the lineage HTTP API, or the Soroban `register_lineage`
@@ -100,6 +100,24 @@ vector corpus carries the same codes in `expect_fail_with`, and
 `zk/tools/test_redacted_ancestry_vectors.py` fails if a declared code is not an
 actual assert in the circuit.
 
+### Prototype limits
+
+The v1 circuit proves consistency of its Pedersen-derived statement only. It
+does **not** constrain actual media bytes, visible pixel/frame regions, or an
+ordered chunk/Merkle commitment, and it does not verify a parent proof inside
+the circuit. Therefore v1 does not yet prove crop equivalence, reordered-chunk
+resistance, altered-visible-region resistance, or that the committed parent
+was registered. A caller must not interpret this proof as those guarantees.
+Only the operation identifier `redact` is accepted; this is not an allowlist of
+implemented media transformations. Those properties require a new circuit and
+statement version with bounded source/derivative chunk commitments and explicit
+parent-proof binding.
+
+The cryptographic assumptions for this prototype are collision resistance of
+the Noir Pedersen hash over the selected field and soundness of the pinned
+UltraHonk proof system. These assumptions do not repair the missing media and
+parent-proof relations above.
+
 ## 6. Compatibility, Migration, and Rollback
 
 - **Compatibility:** additive circuit package under `zk/noir/redacted_ancestry`
@@ -111,6 +129,20 @@ actual assert in the circuit.
   `redacted_ancestry` and registering the resulting statement.
 - **Version:** `CIRCUIT_VERSION = 1` is folded into `ancestry_root`, so a future
   version produces a distinct root.
+- **Browser adapter:** `frontend/src/redactedAncestry.ts` loads the versioned
+  helper/main ACIRs, checks the helper-derived eight-field statement against
+  the generated proof frame, and locally verifies before returning a proof.
+  The adapter remains opt-in. Its ACIRs must be built with the pinned toolchain,
+  published under `frontend/public/noir/`, and entered into both artifact
+  manifests before the API can run. The current checkout does not publish
+  these artifacts.
+- **Soroban plan:** do not submit this frame through the existing
+  `silent_witness` verifier codec. A future registry integration needs an
+  additive schema identifier, fixed eight-field canonical codec in Python,
+  TypeScript, and Rust, shared conformance vectors, verifier-version-window
+  support, and an explicit lineage registration binding to an already verified
+  parent proof. Until those changes and circuit limitations are addressed,
+  Soroban registration is not supported.
 - **Rollback:** remove the two packages from `zk/noir/`, drop their entries from
   `zk/toolchain.lock.json`, the `CIRCUITS` list in
   `zk/noir/scripts/reproducible-build.sh`, and regenerate

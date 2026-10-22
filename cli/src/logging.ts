@@ -30,17 +30,22 @@ function isSensitiveKey(key: string): boolean {
   return SENSITIVE_KEYS.has(normalized) || normalized.includes('witness')
 }
 
-function redactValue(value: unknown): unknown {
+function redactValue(value: unknown, seen = new WeakSet<object>()): unknown {
   if (value === null || value === undefined) {
     return value
   }
 
-  if (Array.isArray(value)) {
-    return value.map(item => redactValue(item))
-  }
-
   if (typeof value !== 'object') {
     return value
+  }
+
+  if (seen.has(value)) {
+    return REDACTED_VALUE
+  }
+  seen.add(value)
+
+  if (Array.isArray(value)) {
+    return value.map(item => redactValue(item, seen))
   }
 
   const result: Record<string, unknown> = {}
@@ -49,7 +54,7 @@ function redactValue(value: unknown): unknown {
     if (isSensitiveKey(key)) {
       result[key] = REDACTED_VALUE
     } else if (val && typeof val === 'object') {
-      result[key] = redactValue(val)
+      result[key] = redactValue(val, seen)
     } else {
       result[key] = val
     }

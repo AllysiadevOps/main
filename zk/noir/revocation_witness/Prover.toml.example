@@ -1,0 +1,77 @@
+# TESTING ONLY: all values, including private inputs, are published synthetic data.
+# Never use these values as real credential material.
+#
+# Purpose: prove that the prover's credential identifier is absent from one
+# particular revocation list without publishing the list's entries in the proof.
+# A revoked credential has had its authorization withdrawn; the leaves represent
+# credential identifiers, not blockchain transactions.
+# Private inputs are known to the prover but omitted from the public statement.
+# Public inputs identify the credential, list and protocol checked with a proof.
+#
+# Example construction: the secrets and tree follow valid_non_revocation_witness
+# and revocation_tree in ../fixtures/revocation_vectors.json. The public hashes
+# were calculated from those inputs using H = std::hash::pedersen_hash.
+# The domain encoding follows the actual registry constant, as explained below.
+
+# Private witness inputs
+
+# Private: secret behind the public credential identifier. Proving knowledge
+# connects the non-revocation claim to a secret the prover actually holds.
+# Example: the fixture supplies 12345; its public identifier is H([12345]).
+credential_secret = "12345"
+
+# Private: additional secret used to derive a replay-tracking identifier without
+# revealing the credential secret. Reusing both secrets gives the same nullifier.
+# Example: the fixture supplies 67890.
+nullifier_secret = "67890"
+
+# Private: leaf_0 through leaf_7 are the eight ordered entries of the committed
+# revocation list. Each occupied entry identifies a revoked credential; the circuit
+# compares the prover's credential identifier with every entry to establish absence.
+# Keeping the entries private avoids disclosing the list through the proof.
+# The fixed eight-slot tree bounds this circuit's work; it is not a transaction log.
+# Example construction: leaf_0 is a zero sentinel; leaf_1 through leaf_7 are H([s])
+# for fixture secrets s = 33333, 44444, 55555, 66666, 77777, 88888, 99999 in order.
+# The zero sentinel is a fixture convention, not an enforced circuit requirement.
+leaf_0 = "0x0000000000000000000000000000000000000000000000000000000000000000"
+leaf_1 = "0x08ea4b53a0a28a9cac13bf7e977c873d7d98d3d68d7b8129e15988bb5ac4e71b"
+leaf_2 = "0x0380a830fba77835e304263933d000283b9913f7f45a833b4feec9ef9b38b3dd"
+leaf_3 = "0x0b70ccd22c510a19be80eb1c697230bd2d42ee4ca85ee4fac70d7da5375b5782"
+leaf_4 = "0x22de3cfbc27467b83450055a1e0ceed242b6c79af86e94f466f27406b93f1e09"
+leaf_5 = "0x05ebab8f35984680e8f5aacad45bf01723ec4fbc1952d2608388288c34d22f1e"
+leaf_6 = "0x2cd0593a84fc94828ccca2da57f8db02794b88acee9c9df056cb91c96577e1c4"
+leaf_7 = "0x08a63a1f3b518e91eae95ee0622f50843a446d420e6334088738db4e29c425b2"
+
+# Public statement inputs
+
+# Public: compact commitment identifying which revocation list this proof uses.
+# Matching the contract's published root prevents a prover from substituting a
+# convenient list that leaves out their own revoked credential.
+# This root describes the whole list, not the status of one credential. The
+# registry separately stores individual credential statuses; revoke_credential_root
+# changes one status, while set_revocation_root publishes this list commitment.
+# The former does not automatically update the latter.
+# Example derivation: build a depth-3 tree from the eight ordered leaves above,
+# hashing adjacent pairs at each level with H([left, right]).
+revocation_root = "0x11e222cddb4ecd2a690d9e7ed0b8982f12e30251cca3667e3e271bff08ea6ebe"
+
+# Public: repeatable identifier that lets the contract detect reuse of the same
+# secrets without receiving them. The circuit checks the derivation; the contract
+# checks and records prior use. This formula does not include the revocation root.
+# Derived from H([credential_secret, nullifier_secret]).
+nullifier = "0x0539222e70963aab30360452087fa38862c31537d679aa427324eb8622d34243"
+
+# Public: label identifying the expected non-revocation protocol/version, so the
+# contract rejects a public statement carrying a different label.
+# The circuit does not validate this value; the contract checks it against
+# REVOCATION_DOMAIN_SEPARATOR. It is not a secret or a live network identifier.
+# Example encoding: raw ASCII "HARPOCRATES_REVOCATION_V1", left-padded to 32 bytes
+# (7 zero bytes, then 25 ASCII bytes), matching the contract and main circuit tests.
+domain_separator = "0x00000000000000484152504f4352415445535f5245564f434154494f4e5f5631"
+
+# Public: identifier of the particular credential claimed to be absent from the
+# revocation list. The verifier sees this identifier, not its underlying secret.
+# The circuit checks knowledge of the secret and absence from all eight leaves;
+# the contract separately requires this credential to be registered and active.
+# Derived from H([credential_secret]).
+credential_root = "0x1a65fb219ffd58992a8c16d3038ef77e4696a8e43e1fb2debdb03b5d9b0ee8a9"

@@ -1,3 +1,9 @@
+# Historical Archive: Issue #280 Tracking Note
+
+> **Historical Archive**: This document is an unmaintained historical tracking note preserved for reference. It is not part of the active protocol documentation.
+
+---
+
 # Issue #280 tracking note
 
 This pull request tracks proof-cache invalidation after registration for

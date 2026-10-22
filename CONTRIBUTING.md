@@ -97,35 +97,27 @@ nargo test
 Each workspace with a test suite publishes its minimum coverage bar as a
 declarative JSON file under `devx/coverage/thresholds/<workspace>.json` (see
 `devx/coverage/README.md`). CI checks a workspace's coverage report against
-its thresholds file with the same script you can run locally:
-
-```bash
-python3 devx/coverage/check_coverage.py --workspace backend --report backend/coverage.json
-python3 devx/coverage/check_coverage.py --lint-thresholds
-```
-
-The check fails closed: a missing report, invalid JSON, or a malformed
-thresholds file all count as a failure, never a silent pass.
+its thresholds file with the same
 
 ## 3. Contributor Workflow Guidelines
 
-### ​3.1 Branch Naming Convention
-​Branches must use one of the following standard prefixes:
+### 3.1 Branch Naming Convention
+Branches must use one of the following standard prefixes:
 
 ```bash
-​feat/<short-description> — New features or functional enhancements
+feat/<short-description> — New features or functional enhancements
 
-​fix/<short-description> — Bug fixes or security patches
+fix/<short-description> — Bug fixes or security patches
 
-​docs/<short-description> — Documentation updates and guides
+docs/<short-description> — Documentation updates and guides
 
-​refactor/<short-description> — Code restructuring without logic changes
+refactor/<short-description> — Code restructuring without logic changes
 
-​test/<short-description> — Adding or updating unit/integration tests
+test/<short-description> — Adding or updating unit/integration tests
 ```
 
 ### 3.2 Conventional Commits
-​All commit messages must strictly adhere to the Conventional Commits format:
+All commit messages must strictly adhere to the Conventional Commits format:
 ```bash
 <type>(<scope>): <short description>
 
@@ -150,4 +142,31 @@ Every Pull Request must satisfy the following checklist before being merged:
 
 This project and everyone participating in it is governed by our [Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold these standards. 
 
+For protocol vocabulary see [docs/glossary.md](docs/glossary.md).
+
 Please report unacceptable behavior to `conduct@<your-organization-domain>.com`.
+
+## 5. Local Pre-commit Checks
+
+To catch formatting, lint, and secret issues before they reach CI, install [pre-commit](https://pre-commit.com/):
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+Then, on every commit, the hooks defined in `.pre-commit-config.yaml` will run automatically on relevant files. To check the whole repository:
+
+```bash
+pre-commit run --all-files
+```
+
+The configuration includes:
+
+- Standard checks (trailing whitespace, YAML/JSON validity, etc.)
+- Ruff for Python files in `backend/`, `devx/`, and `zk/`
+- ESLint for staged TypeScript/JavaScript files
+- `cargo fmt --check` for Rust contracts
+- The project's `devx/secret_scanner.py`
+
+These hooks complement (but do not replace) the existing CI jobs.

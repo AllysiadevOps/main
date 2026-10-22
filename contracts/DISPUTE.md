@@ -117,7 +117,8 @@ Failed, rejected, and cancelled calls emit no event and do not mutate storage
 
 ## 5. Storage, Migration, And Rollback
 
-All dispute state is new, additive persistent storage:
+Dispute state uses persistent storage for dispute records and open dispute counts,
+and temporary storage for reporter cooldowns:
 
 ```text
 Dispute(dispute_id)              -> DisputeRecord
@@ -128,6 +129,26 @@ ProofDisputeSeq(proof_id)        -> u32
 ProofDispute(proof_id, seq)      -> BytesN<32>
 Lineage(output_digest)           -> LineageRecord   (restored lineage key)
 ```
+
+### TTL Extension Policy
+
+Dispute records and open dispute counters must remain available as long as the
+proof they reference:
+
+* **Write operations** (`open_dispute`, `respond_dispute`, `resolve_dispute`,
+  `dismiss_dispute`, `supersede_dispute`) bump the persistent TTL of `DataKey::Dispute`
+  and associated open dispute counters (`ProofOpenDisputeCount`, `ReporterOpenDisputeCount`)
+  using the same thresholds as proof records:
+  `BUMP_THRESHOLD_LEDGERS` (241,920 ledgers / ~14 days) and `BUMP_TARGET_LEDGERS`
+  (518,400 ledgers / ~30 days).
+* **Read operations** (`get_dispute`, `get_open_dispute_count`) also extend the
+  persistent TTL using `BUMP_THRESHOLD_LEDGERS` and `BUMP_TARGET_LEDGERS` when entries
+  are accessed.
+* **Cooldown entries** (`ReporterCooldown`) are stored in **temporary storage**
+  with a lifetime matching `REPORTER_COOLDOWN_SECS` (~17,280 ledgers). Because
+  cooldown is only needed for the 24-hour rate limit window, temporary storage
+  ensures cooldown entries do not consume persistent rent unnecessarily and are
+  automatically reclaimed upon expiry.
 
 Existing deployments have none of these keys populated, which reads as
 "no disputes". Upgrading to this wasm is therefore backward compatible with no

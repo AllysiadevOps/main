@@ -1201,6 +1201,31 @@ body::-webkit-scrollbar-thumb:hover,
   line-height: 1.5;
 }
 
+.provenance-dispute {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid rgba(214, 220, 230, 0.28);
+  border-left-width: 4px;
+  border-radius: 8px;
+  background: rgba(214, 220, 230, 0.06);
+}
+
+.provenance-dispute strong {
+  color: rgba(236, 240, 246, 0.95);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.provenance-dispute p {
+  margin: 0;
+  color: rgba(236, 240, 246, 0.88);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .provenance-grid {
   display: grid;
   gap: 10px;

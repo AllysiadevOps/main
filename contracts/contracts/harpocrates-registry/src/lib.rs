@@ -50,6 +50,8 @@ const STATUS_POLICY_CANCELLED: u32 = 2;
 const MAX_SIGNERS: u32 = 16;
 const DEFAULT_APPROVAL_TTL_SECS: u64 = 86_400;
 
+pub const MAX_REVOKE_PROOFS_BATCH_SIZE: u32 = 20;
+
 // ---------------------------------------------------------------------------
 // Lineage graph bounds (#333)
 // ---------------------------------------------------------------------------
@@ -104,6 +106,17 @@ const _: () = assert!(
     (MAX_LINEAGE_FANOUT as usize) * 32 <= MAX_LINEAGE_PAYLOAD_BYTES as usize,
     "MAX_LINEAGE_FANOUT parent digests must fit inside MAX_LINEAGE_PAYLOAD_BYTES"
 );
+
+// ---------------------------------------------------------------------------
+// Tier 2 Source Batch Commitments
+// ---------------------------------------------------------------------------
+pub const MAX_SOURCE_BATCH_COUNT: u32 = 1_048_576;
+pub const MIN_SOURCE_BATCH_COUNT: u32 = 1;
+pub const MAX_SOURCE_BATCH_PROOF_LEN: u32 = 32;
+
+pub const SOURCE_BATCH_LEAF_DOMAIN: u8 = 0x00;
+pub const SOURCE_BATCH_NODE_DOMAIN: u8 = 0x01;
+
 
 // ---------------------------------------------------------------------------
 // On-chain metadata envelope versioning (#317)
@@ -480,6 +493,29 @@ pub struct TimelockProposalPage {
     pub next_cursor: Option<u32>,
 }
 
+/// Maximum number of credential roots a single `list_credential_roots` page may return (#731).
+pub const MAX_CREDENTIAL_ROOTS_PAGE: u32 = 25;
+/// Maximum number of credential roots backfilled in a single `upgrade_storage` call (#731).
+pub const MAX_ROOTS_BACKFILL_BATCH: u32 = 25;
+
+/// An entry in a `CredentialRootPage` (#731).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CredentialRootEntry {
+    pub root_hash: BytesN<32>,
+    pub status: u32,
+}
+
+/// Paginated result from `list_credential_roots` (#731).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CredentialRootPage {
+    pub roots: SorobanVec<CredentialRootEntry>,
+    /// Cursor for the next page (`Some(next_cursor)`), or `None` if end reached.
+    pub next_cursor: Option<u32>,
+}
+
+
 /// A narrowly scoped, expiring authority to act for `grantor`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -643,6 +679,20 @@ pub struct ProofRecord {
     pub batch_size: u32,
 }
 
+/// Tier 2 source batch root record.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchRecord {
+    pub root: BytesN<32>,
+    pub source: Address,
+    pub count: u32,
+    pub metadata_hash: BytesN<32>,
+    pub created_at: u64,
+}
+
+pub type SourceBatchRecord = BatchRecord;
+
+
 /// Versioned on-chain metadata envelope binding (#317).
 ///
 /// Stores only `(version, metadata_hash)` commitments — never raw envelope
@@ -791,6 +841,18 @@ pub struct BatchProofRegistered {
     pub tier: u32,
     pub status: u32,
 }
+
+#[contractevent(topics = ["batch", "root"])]
+pub struct SourceBatchRootRegistered {
+    #[topic]
+    pub root: BytesN<32>,
+    #[topic]
+    pub source: Address,
+    pub count: u32,
+    pub metadata_hash: BytesN<32>,
+    pub registered_at: u64,
+}
+
 
 #[contractevent(topics = ["proof", "revoke"])]
 pub struct ProofRevoked {
@@ -1281,6 +1343,9 @@ pub const DOMAIN_NETWORK_FIELD: [u8; 32] = [
 /// Expected length of v1 public inputs (5 × 32 = 160 bytes, including domain_tag).
 const SILENT_WITNESS_V1_INPUT_LEN: u32 = 160;
 
+/// Expected length of v1 browser public inputs (4 × 32 = 128 bytes, shipped in frontend/public/noir/silent_witness.json).
+const SILENT_WITNESS_BROWSER_V1_INPUT_LEN: u32 = 128;
+
 /// Length of the superseded bare v2 scoped frame (7 x 32 = 224 bytes, including
 /// domain_tag). It commits no circuit version, so a verifier could only *infer*
 /// one from the length. `register_anonymous_verified` rejects it outright with
@@ -1530,6 +1595,14 @@ pub struct VerifierPage {
     pub total_populated: u32,
 }
 
+#[contractevent(topics = ["ttl", "maintain"])]
+pub struct TTLMaintained {
+    pub count: u32,
+}
+
+#[contractevent(topics = ["ttl", "instance"])]
+pub struct InstanceTTLMaintained;
+
 #[contracttype]
 pub enum DataKey {
     Admin,
@@ -1538,6 +1611,18 @@ pub enum DataKey {
     Nullifier(BytesN<32>),
     CredentialRoot(BytesN<32>),
     CredentialRootV2(BytesN<32>),
+    /// Sequential counter for credential root index (#731).
+    CredentialRootSeq,
+    /// Credential root index entry by sequential ID (1-based) (#731).
+    CredentialRootIndex(u32),
+    /// Tracking index presence by root hash for idempotency (#731).
+    CredentialRootIndexed(BytesN<32>),
+    /// Staged credential roots for backfill during upgrade_storage (#731).
+    CredentialRootsBackfillQueue,
+    /// Cursor for backfill during upgrade_storage (#731).
+    CredentialRootsBackfillCursor,
+    /// Alias for backfill queue compatibility (#731).
+    CredentialRootsBackfill,
     Issuer(Address),
     /// Rotation grace record for an issuer key that has rotated out (#323).
     IssuerRotation(Address),
@@ -1841,6 +1926,9 @@ impl HarpocratesRegistry {
             }
             .publish(&env);
         }
+
+        // Backfill legacy credential roots into the index (bounded per call) (#731).
+        backfill_credential_roots_step(&env);
     }
 
     /// Return the active storage schema version. Legacy deployments that have
@@ -2171,6 +2259,7 @@ impl HarpocratesRegistry {
                 expires_at: 0,
             },
         );
+        index_credential_root(&env, &credential_root);
         CredentialRootAdded {
             credential_root,
             metadata_hash,
@@ -2209,6 +2298,98 @@ impl HarpocratesRegistry {
         env.storage()
             .persistent()
             .get(&DataKey::CredentialRoot(credential_root))
+    }
+
+    /// Return the total number of indexed credential roots (#731).
+    pub fn get_credential_root_count(env: Env) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CredentialRootSeq)
+            .unwrap_or(0u32)
+    }
+
+    /// Enumerate credential roots and their current statuses across sequential IDs (#731).
+    ///
+    /// - `cursor`: ID offset to start scanning from (1-based sequential IDs).
+    ///   If `cursor == 0`, scanning begins at ID 1.
+    /// - `limit`: maximum number of roots to return; capped at `MAX_CREDENTIAL_ROOTS_PAGE`.
+    ///   If 0 or exceeding the cap, `limit` is clamped to `MAX_CREDENTIAL_ROOTS_PAGE`.
+    /// - Non-existent/deleted entries are skipped.
+    /// - Read-only query; no auth required.
+    pub fn list_credential_roots(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> CredentialRootPage {
+        let effective_limit = if limit == 0 || limit > MAX_CREDENTIAL_ROOTS_PAGE {
+            MAX_CREDENTIAL_ROOTS_PAGE
+        } else {
+            limit
+        };
+
+        let total_seq: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CredentialRootSeq)
+            .unwrap_or(0u32);
+
+        let mut roots = SorobanVec::new(&env);
+        let mut next_cursor: Option<u32> = None;
+
+        let mut id = if cursor == 0 { 1u32 } else { cursor };
+
+        while id <= total_seq {
+            if let Some(root) = env
+                .storage()
+                .persistent()
+                .get::<_, BytesN<32>>(&DataKey::CredentialRootIndex(id))
+            {
+                if let Some(record) = get_credential_root_record_opt(&env, &root) {
+                    let status = if record.status == STATUS_EXPIRED
+                        || (record.expires_at > 0 && env.ledger().timestamp() >= record.expires_at)
+                    {
+                        STATUS_EXPIRED
+                    } else {
+                        record.status
+                    };
+                    roots.push_back(CredentialRootEntry {
+                        root_hash: root,
+                        status,
+                    });
+                    if roots.len() == effective_limit {
+                        if id < total_seq {
+                            next_cursor = Some(id + 1);
+                        }
+                        break;
+                    }
+                }
+            }
+            id = id.saturating_add(1);
+        }
+
+        CredentialRootPage {
+            roots,
+            next_cursor,
+        }
+    }
+
+    /// Stage or queue legacy credential roots for bounded backfill during `upgrade_storage` (#731).
+    pub fn stage_credential_roots_for_backfill(
+        env: Env,
+        admin: Address,
+        roots: SorobanVec<BytesN<32>>,
+    ) {
+        require_admin(&env, &admin);
+        let backfill_key = DataKey::CredentialRootsBackfillQueue;
+        let mut queue: SorobanVec<BytesN<32>> = env
+            .storage()
+            .persistent()
+            .get(&backfill_key)
+            .unwrap_or_else(|| SorobanVec::new(&env));
+        for r in roots.iter() {
+            queue.push_back(r);
+        }
+        env.storage().persistent().set(&backfill_key, &queue);
     }
 
     pub fn revoke_issuer(env: Env, admin: Address, issuer: Address) {
@@ -2943,6 +3124,49 @@ impl HarpocratesRegistry {
                 },
                 None,
             )
+        } else if input_len == SILENT_WITNESS_BROWSER_V1_INPUT_LEN {
+            // v1 browser artifact path (4 x 32 = 128 bytes, shipped in frontend/public/noir)
+            let parsed = parse_browser_silent_witness_public_inputs(&env, &public_inputs);
+            if parsed.video_hash != video_hash {
+                panic_with_error!(&env, RegistryError::InvalidPublicInputs);
+            }
+            require_active_credential_root(&env, &parsed.credential_root);
+
+            let verifier: Address = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Verifier)
+                .unwrap_or_else(|| panic_with_error!(&env, RegistryError::VerifierNotSet));
+            require_verified_proof(
+                &env,
+                &verifier,
+                CIRCUIT_VERSION_SILENT_WITNESS_V1,
+                public_inputs,
+                proof,
+            );
+
+            env.storage()
+                .persistent()
+                .set(&DataKey::VerifierNullifier(verifier, parsed.nullifier.clone()), &true);
+
+            let expires_at = compute_expires_at(&env);
+            save_record(
+                &env,
+                &proof_id,
+                ProofRecord {
+                    video_hash,
+                    metadata_hash,
+                    tier: TIER_SILENT_WITNESS,
+                    status: STATUS_REGISTERED,
+                    created_at: env.ledger().timestamp(),
+                    expires_at,
+                    source: None,
+                    issuer: None,
+                    nullifier: Some(parsed.nullifier),
+                    batch_size: 0,
+                },
+                None,
+            )
         } else {
             panic_with_error!(&env, RegistryError::InvalidPublicInputs);
         };
@@ -3144,6 +3368,117 @@ impl HarpocratesRegistry {
         };
         save_record(&env, &proof_id, record.clone(), Some(source.clone()));
         record
+    }
+
+    /// Register a Tier 2 source batch root.
+    ///
+    /// Allows high-volume Tier 2 sources to anchor many items in a single transaction
+    /// by committing the root of a binary Merkle tree.
+    pub fn register_source_batch_root(
+        env: Env,
+        source: Address,
+        root: BytesN<32>,
+        count: u32,
+        metadata_hash: BytesN<32>,
+    ) -> BatchRecord {
+        require_domain_unpaused(&env, PAUSE_DOMAIN_TIER2_REGISTRATION);
+        source.require_auth();
+
+        if count < MIN_SOURCE_BATCH_COUNT || count > MAX_SOURCE_BATCH_COUNT {
+            panic_with_error!(&env, RegistryError::BatchSizeExceeded);
+        }
+
+        if env.storage().persistent().has(&DataKey::SourceBatch(root.clone())) {
+            panic_with_error!(&env, RegistryError::DuplicateProof);
+        }
+
+        let created_at = env.ledger().timestamp();
+        let record = BatchRecord {
+            root: root.clone(),
+            source: source.clone(),
+            count,
+            metadata_hash: metadata_hash.clone(),
+            created_at,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::SourceBatch(root.clone()), &record);
+
+        SourceBatchRootRegistered {
+            root,
+            source,
+            count,
+            metadata_hash,
+            registered_at: created_at,
+        }
+        .publish(&env);
+
+        record
+    }
+
+    /// Verify cryptographic inclusion of a leaf in a source batch root.
+    ///
+    /// Evaluates a binary Merkle inclusion proof using SHA-256 with domain-separated
+    /// leaf (`0x00`) and node (`0x01`) hashing to prevent second-preimage attacks
+    /// by construction.
+    pub fn verify_source_batch_inclusion(
+        env: Env,
+        root: BytesN<32>,
+        leaf: BytesN<32>,
+        proof: Vec<BytesN<32>>,
+        index: u32,
+    ) -> bool {
+        let proof_len = proof.len();
+        if proof_len > MAX_SOURCE_BATCH_PROOF_LEN {
+            panic_with_error!(&env, RegistryError::InvalidInclusionProof);
+        }
+
+        if proof_len < 32 {
+            let max_capacity = 1u64 << proof_len;
+            if (index as u64) >= max_capacity {
+                panic_with_error!(&env, RegistryError::InvalidInclusionProof);
+            }
+        }
+
+        // Domain-separated leaf hashing: SHA-256(0x00 || leaf)
+        let mut leaf_preimage = Bytes::new(&env);
+        leaf_preimage.push_back(SOURCE_BATCH_LEAF_DOMAIN);
+        leaf_preimage.extend_from_slice(&leaf.to_array());
+        let mut current: BytesN<32> = env.crypto().sha256(&leaf_preimage).into();
+
+        // Walk up the Merkle path
+        for i in 0..proof_len {
+            let sibling = proof.get(i).unwrap();
+            let bit = (index >> i) & 1;
+
+            let mut node_preimage = Bytes::new(&env);
+            node_preimage.push_back(SOURCE_BATCH_NODE_DOMAIN);
+            if bit == 0 {
+                // current is left, sibling is right
+                node_preimage.extend_from_slice(&current.to_array());
+                node_preimage.extend_from_slice(&sibling.to_array());
+            } else {
+                // sibling is left, current is right
+                node_preimage.extend_from_slice(&sibling.to_array());
+                node_preimage.extend_from_slice(&current.to_array());
+            }
+
+            current = env.crypto().sha256(&node_preimage).into();
+        }
+
+        if current != root {
+            panic_with_error!(&env, RegistryError::InvalidInclusionProof);
+        }
+
+        true
+    }
+
+    /// Read-only query for a stored source batch record.
+    pub fn get_source_batch(env: Env, root: BytesN<32>) -> Option<BatchRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::SourceBatch(root))
     }
 
     pub fn register_seal(
@@ -3439,10 +3774,13 @@ impl HarpocratesRegistry {
         record
     }
 
-    pub fn revoke_proof(env: Env, admin: Address, proof_id: BytesN<32>) {
-        require_admin(&env, &admin);
-
-        let mut record = get_proof_record(&env, &proof_id);
+    fn revoke_proof_internal(
+        env: &Env,
+        admin: &Address,
+        proof_id: &BytesN<32>,
+        reason_code: u32,
+    ) {
+        let mut record = get_proof_record(env, proof_id);
         record.status = STATUS_REVOKED;
         env.storage()
             .persistent()
@@ -3451,14 +3789,45 @@ impl HarpocratesRegistry {
             proof_id: proof_id.clone(),
             status: STATUS_REVOKED,
         }
-        .publish(&env);
+        .publish(env);
         record_proof_history(
-            &env,
-            &proof_id,
+            env,
+            proof_id,
             ProofLifecycleAction::Revoked as u32,
-            Some(admin),
-            1,
+            Some(admin.clone()),
+            reason_code,
         );
+    }
+
+    pub fn revoke_proof(env: Env, admin: Address, proof_id: BytesN<32>) {
+        require_admin(&env, &admin);
+        Self::revoke_proof_internal(&env, &admin, &proof_id, 1);
+    }
+
+    /// Revoke multiple proofs in a single transaction during incident response.
+    ///
+    /// Reuses the single-revoke path so history entries and events are identical per proof.
+    /// Bounded by [`MAX_REVOKE_PROOFS_BATCH_SIZE`] against the execution budget.
+    /// Fails atomically on any invalid proof.
+    pub fn revoke_proofs(
+        env: Env,
+        admin: Address,
+        proof_ids: soroban_sdk::Vec<BytesN<32>>,
+        reason_code: u32,
+    ) {
+        require_admin(&env, &admin);
+
+        if proof_ids.len() > MAX_REVOKE_PROOFS_BATCH_SIZE {
+            panic_with_error!(&env, RegistryError::BatchTooLarge);
+        }
+
+        if reason_code > 255 {
+            panic_with_error!(&env, RegistryError::InvalidReasonCode);
+        }
+
+        for proof_id in proof_ids.iter() {
+            Self::revoke_proof_internal(&env, &admin, &proof_id, reason_code);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -4499,7 +4868,6 @@ impl HarpocratesRegistry {
             total_populated,
         }
     }
-}
 
     // -----------------------------------------------------------------------
     // Dispute / correction state machine (#dispute)
@@ -4573,10 +4941,12 @@ impl HarpocratesRegistry {
         }
 
         // 4. Reporter cooldown (keyed by the privacy-safe reporter_hash).
+        // Uses temporary storage so entries do not consume persistent rent unnecessarily
+        // and are automatically reclaimed after the cooldown window.
         let cooldown_key = DataKey::ReporterCooldown(reporter_hash.clone());
         let last_open: u64 = env
             .storage()
-            .persistent()
+            .temporary()
             .get(&cooldown_key)
             .unwrap_or(0u64);
         let now = env.ledger().timestamp();
@@ -4584,8 +4954,14 @@ impl HarpocratesRegistry {
             panic_with_error!(&env, RegistryError::ReporterOnCooldown);
         }
 
-        // 5. Persist cooldown timestamp.
-        env.storage().persistent().set(&cooldown_key, &now);
+        // 5. Store cooldown timestamp in temporary storage with TTL matching the cooldown window.
+        env.storage().temporary().set(&cooldown_key, &now);
+        const REPORTER_COOLDOWN_LEDGERS: u32 = (REPORTER_COOLDOWN_SECS / 5) as u32;
+        env.storage().temporary().extend_ttl(
+            &cooldown_key,
+            REPORTER_COOLDOWN_LEDGERS,
+            REPORTER_COOLDOWN_LEDGERS,
+        );
 
         // 6. Compute deadlines.
         let respond_deadline = now.saturating_add(RESPOND_DEADLINE_SECS);
@@ -4606,18 +4982,33 @@ impl HarpocratesRegistry {
             resolved_at: 0,
             superseded_by: None,
         };
+        let dispute_key = DataKey::Dispute(dispute_id.clone());
         env.storage()
             .persistent()
-            .set(&DataKey::Dispute(dispute_id.clone()), &record);
+            .set(&dispute_key, &record);
+        env.storage()
+            .persistent()
+            .extend_ttl(&dispute_key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
 
         // 8. Increment open-dispute counters (per proof and per reporter).
+        let proof_dispute_count_key = DataKey::ProofOpenDisputeCount(proof_id.clone());
         env.storage().persistent().set(
-            &DataKey::ProofOpenDisputeCount(proof_id.clone()),
+            &proof_dispute_count_key,
             &(open_count + 1),
+        );
+        env.storage().persistent().extend_ttl(
+            &proof_dispute_count_key,
+            BUMP_THRESHOLD_LEDGERS,
+            BUMP_TARGET_LEDGERS,
         );
         env.storage()
             .persistent()
             .set(&reporter_count_key, &(reporter_open_count + 1));
+        env.storage().persistent().extend_ttl(
+            &reporter_count_key,
+            BUMP_THRESHOLD_LEDGERS,
+            BUMP_TARGET_LEDGERS,
+        );
 
         // 8b. Append dispute to per-proof dispute index.
         append_proof_dispute(&env, &proof_id, &dispute_id);
@@ -4696,9 +5087,22 @@ impl HarpocratesRegistry {
         record.response_commitment = Some(response_commitment.clone());
         record.resolve_deadline = now.saturating_add(RESOLVE_DEADLINE_SECS);
 
+        let dispute_key = DataKey::Dispute(dispute_id.clone());
         env.storage()
             .persistent()
-            .set(&DataKey::Dispute(dispute_id.clone()), &record);
+            .set(&dispute_key, &record);
+        env.storage()
+            .persistent()
+            .extend_ttl(&dispute_key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
+
+        let proof_dispute_count_key = DataKey::ProofOpenDisputeCount(record.proof_id.clone());
+        if env.storage().persistent().has(&proof_dispute_count_key) {
+            env.storage().persistent().extend_ttl(
+                &proof_dispute_count_key,
+                BUMP_THRESHOLD_LEDGERS,
+                BUMP_TARGET_LEDGERS,
+            );
+        }
 
         DisputeResponded {
             dispute_id,
@@ -4740,9 +5144,13 @@ impl HarpocratesRegistry {
         record.status = DisputeStatus::Resolved;
         record.resolved_at = now;
 
+        let dispute_key = DataKey::Dispute(dispute_id.clone());
         env.storage()
             .persistent()
-            .set(&DataKey::Dispute(dispute_id.clone()), &record);
+            .set(&dispute_key, &record);
+        env.storage()
+            .persistent()
+            .extend_ttl(&dispute_key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
 
         // Decrement open-dispute counters (per proof and per reporter).
         decrement_open_dispute_count(&env, &record.proof_id);
@@ -4779,9 +5187,13 @@ impl HarpocratesRegistry {
         record.status = DisputeStatus::Dismissed;
         record.resolved_at = now;
 
+        let dispute_key = DataKey::Dispute(dispute_id.clone());
         env.storage()
             .persistent()
-            .set(&DataKey::Dispute(dispute_id.clone()), &record);
+            .set(&dispute_key, &record);
+        env.storage()
+            .persistent()
+            .extend_ttl(&dispute_key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
 
         // Decrement open-dispute counters (per proof and per reporter).
         decrement_open_dispute_count(&env, &record.proof_id);
@@ -4850,9 +5262,13 @@ impl HarpocratesRegistry {
         record.superseded_by = Some(superseding_proof_id.clone());
         record.resolved_at = now;
 
+        let dispute_key = DataKey::Dispute(dispute_id.clone());
         env.storage()
             .persistent()
-            .set(&DataKey::Dispute(dispute_id.clone()), &record);
+            .set(&dispute_key, &record);
+        env.storage()
+            .persistent()
+            .extend_ttl(&dispute_key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
 
         // Record the reverse supersession direction for cycle detection.
         record_supersession_direction(&env, &record.proof_id, &superseding_proof_id);
@@ -4874,16 +5290,33 @@ impl HarpocratesRegistry {
 
     /// Retrieve a dispute record by its dispute_id.
     pub fn get_dispute(env: Env, dispute_id: BytesN<32>) -> Option<DisputeRecord> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Dispute(dispute_id))
+        let key = DataKey::Dispute(dispute_id);
+        let record: Option<DisputeRecord> = env.storage().persistent().get(&key);
+        if let Some(ref rec) = record {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
+            let count_key = DataKey::ProofOpenDisputeCount(rec.proof_id.clone());
+            if env.storage().persistent().has(&count_key) {
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&count_key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
+            }
+        }
+        record
     }
 
     /// Return the number of currently Open disputes for a given proof.
     pub fn get_open_dispute_count(env: Env, proof_id: BytesN<32>) -> u32 {
+        let key = DataKey::ProofOpenDisputeCount(proof_id);
+        if env.storage().persistent().has(&key) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
+        }
         env.storage()
             .persistent()
-            .get(&DataKey::ProofOpenDisputeCount(proof_id))
+            .get(&key)
             .unwrap_or(0u32)
     }
 
@@ -5259,21 +5692,68 @@ fn get_issuer_record(env: &Env, issuer: &Address) -> IssuerRecord {
         .unwrap_or_else(|| panic_with_error!(env, RegistryError::UnknownIssuer))
 }
 
-fn get_credential_root_record(env: &Env, credential_root: &BytesN<32>) -> CredentialRootRecord {
+fn get_credential_root_record_opt(
+    env: &Env,
+    credential_root: &BytesN<32>,
+) -> Option<CredentialRootRecord> {
     let key_v2 = DataKey::CredentialRootV2(credential_root.clone());
     if let Some(record) = env.storage().persistent().get(&key_v2) {
-        return record;
+        return Some(record);
     }
     let key_v1 = DataKey::CredentialRoot(credential_root.clone());
     if let Some(v1) = env.storage().persistent().get::<_, CredentialRootRecordV1>(&key_v1) {
-        return CredentialRootRecord {
+        return Some(CredentialRootRecord {
             metadata_hash: v1.metadata_hash,
             status: if v1.active { STATUS_REGISTERED } else { STATUS_REVOKED },
             issued_at: v1.issued_at,
             expires_at: 0,
-        };
+        });
     }
-    panic_with_error!(env, RegistryError::UnknownCredentialRoot)
+    None
+}
+
+fn get_credential_root_record(env: &Env, credential_root: &BytesN<32>) -> CredentialRootRecord {
+    get_credential_root_record_opt(env, credential_root)
+        .unwrap_or_else(|| panic_with_error!(env, RegistryError::UnknownCredentialRoot))
+}
+
+fn index_credential_root(env: &Env, root: &BytesN<32>) -> bool {
+    let indexed_key = DataKey::CredentialRootIndexed(root.clone());
+    if env.storage().persistent().has(&indexed_key) {
+        return false;
+    }
+    let seq_key = DataKey::CredentialRootSeq;
+    let seq: u32 = env.storage().persistent().get(&seq_key).unwrap_or(0);
+    let next_seq = seq.saturating_add(1);
+    env.storage()
+        .persistent()
+        .set(&DataKey::CredentialRootIndex(next_seq), root);
+    env.storage().persistent().set(&seq_key, &next_seq);
+    env.storage().persistent().set(&indexed_key, &next_seq);
+    true
+}
+
+fn backfill_credential_roots_step(env: &Env) {
+    let backfill_key = DataKey::CredentialRootsBackfillQueue;
+    let queue_opt: Option<SorobanVec<BytesN<32>>> = env
+        .storage()
+        .persistent()
+        .get(&backfill_key)
+        .or_else(|| env.storage().persistent().get(&DataKey::CredentialRootsBackfill));
+
+    if let Some(queue) = queue_opt {
+        let cursor_key = DataKey::CredentialRootsBackfillCursor;
+        let mut cursor: u32 = env.storage().persistent().get(&cursor_key).unwrap_or(0);
+        let total = queue.len();
+        let mut processed = 0u32;
+        while cursor < total && processed < MAX_ROOTS_BACKFILL_BATCH {
+            let root = queue.get(cursor).unwrap();
+            index_credential_root(env, &root);
+            cursor += 1;
+            processed += 1;
+        }
+        env.storage().persistent().set(&cursor_key, &cursor);
+    }
 }
 
 fn get_active_verifier(env: &Env) -> Address {
@@ -5830,6 +6310,48 @@ fn parse_silent_witness_public_inputs(env: &Env, public_inputs: &Bytes) -> Silen
     }
 }
 
+struct BrowserSilentWitnessInputs {
+    video_hash: BytesN<32>,
+    credential_root: BytesN<32>,
+    nullifier: BytesN<32>,
+}
+
+/// Parse the 128-byte public-input blob produced by the browser silent_witness Noir circuit
+/// (frontend/public/noir/silent_witness.json).
+///
+/// Layout (4 x BN254 field elements, 32 bytes each):
+///   [ 0.. 32)  video_hash_hi (low 16 bytes)
+///   [32.. 64)  video_hash_lo (low 16 bytes)
+///   [64.. 96)  credential_root
+///   [96..128)  nullifier
+fn parse_browser_silent_witness_public_inputs(
+    env: &Env,
+    public_inputs: &Bytes,
+) -> BrowserSilentWitnessInputs {
+    if public_inputs.len() != SILENT_WITNESS_BROWSER_V1_INPUT_LEN {
+        panic_with_error!(env, RegistryError::InvalidPublicInputs);
+    }
+    let mut frame = [0u8; 128];
+    public_inputs.copy_into_slice(&mut frame);
+
+    let mut video_hash = [0u8; 32];
+    video_hash[..16].copy_from_slice(&frame[16..32]);
+    video_hash[16..].copy_from_slice(&frame[48..64]);
+
+    let mut credential_root = [0u8; 32];
+    credential_root.copy_from_slice(&frame[64..96]);
+
+    let mut nullifier = [0u8; 32];
+    nullifier.copy_from_slice(&frame[96..128]);
+
+    BrowserSilentWitnessInputs {
+        video_hash: BytesN::from_array(env, &video_hash),
+        credential_root: BytesN::from_array(env, &credential_root),
+        nullifier: BytesN::from_array(env, &nullifier),
+    }
+}
+
+
 // ---------------------------------------------------------------------------
 // Silent Witness v2 (scoped) public input parsing
 // ---------------------------------------------------------------------------
@@ -6181,6 +6703,9 @@ fn decrement_open_dispute_count(env: &Env, proof_id: &BytesN<32>) {
         env.storage().persistent().remove(&key);
     } else {
         env.storage().persistent().set(&key, &new_count);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
     }
 }
 
@@ -6194,6 +6719,9 @@ fn decrement_reporter_open_dispute_count(env: &Env, reporter: &Address) {
         env.storage().persistent().remove(&key);
     } else {
         env.storage().persistent().set(&key, &new_count);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, BUMP_THRESHOLD_LEDGERS, BUMP_TARGET_LEDGERS);
     }
 }
 
@@ -6551,6 +7079,8 @@ pub(crate) mod event_test_utils {
 #[cfg(test)]
 mod test;
 #[cfg(test)]
+mod test_aggregation;
+#[cfg(test)]
 mod test_auth;
 #[cfg(test)]
 mod test_budget;
@@ -6575,17 +7105,21 @@ mod test_invariants;
 #[cfg(test)]
 mod test_issuer_rotation;
 #[cfg(test)]
+mod test_lifecycle;
+#[cfg(test)]
 mod test_lineage;
 #[cfg(test)]
 mod test_metadata_envelope;
 #[cfg(test)]
-mod test_invariants;
-#[cfg(test)]
 mod test_pause;
+#[cfg(test)]
+mod test_receipt;
 #[cfg(test)]
 mod test_registration_replay;
 #[cfg(test)]
 mod test_revocation;
+#[cfg(test)]
+mod test_roles;
 #[cfg(test)]
 mod test_schema;
 #[cfg(test)]
@@ -6597,13 +7131,15 @@ mod test_state_machine;
 #[cfg(test)]
 pub mod test_timelock;
 #[cfg(test)]
+mod test_threshold_seal;
+#[cfg(test)]
 mod test_timestamp_claim;
 #[cfg(test)]
-mod test_selective_disclosure;
-#[cfg(test)]
-mod test_list_verifiers;
 mod test_upgrade_compat;
 #[cfg(test)]
 mod test_verifier_versions;
 #[cfg(test)]
 mod test_ttl;
+#[cfg(test)]
+mod test_list_credential_roots;
+

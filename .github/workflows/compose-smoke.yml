@@ -1,0 +1,77 @@
+name: Compose Smoke Validation
+
+on:
+  schedule:
+    - cron: '30 4 * * *'  # Daily at 04:30 UTC
+  workflow_dispatch:
+    inputs:
+      timeout:
+        description: 'Smoke test timeout bound in seconds'
+        required: false
+        default: '180'
+      compose_file:
+        description: 'Compose file to test'
+        required: false
+        default: 'docker-compose.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compose-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke-test:
+    name: Verify composed services and health probes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run smoke runner unit tests
+        run: |
+          python -m unittest discover -s devx -p 'test_compose_smoke.py' -v
+
+      - name: Prepare environment configuration
+        run: |
+          cp backend/.env.example backend/.env
+          # Connect to Postgres service container via docker bridge gateway on Linux
+          sed -i 's|DATABASE_URL=.*|DATABASE_URL=postgresql://postgres:password@172.17.0.1:5432/postgres?sslmode=disable|' backend/.env
+          sed -i 's|CORS_ORIGINS=.*|CORS_ORIGINS=http://localhost:8080,http://127.0.0.1:8080|' backend/.env
+          touch .env
+
+      - name: Run compose smoke test
+        env:
+          VITE_API_BASE: http://127.0.0.1:5050
+          VITE_STELLAR_RPC_URL: https://soroban-testnet.stellar.org
+          VITE_STELLAR_READONLY_SOURCE: GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF
+          VITE_HARPOCRATES_REGISTRY_ID: CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4
+        run: |
+          python devx/compose_smoke.py \
+            --compose-file "${{ inputs.compose_file || 'docker-compose.yml' }}" \
+            --timeout "${{ inputs.timeout || '180' }}"

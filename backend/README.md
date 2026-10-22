@@ -24,6 +24,83 @@ Stellar.
 `POST /api/stego/extract` reads the embedded artifact, hashes the received file,
 and returns extracted Harpocrates metadata when present.
 
+
+## Configuration
+
+This section documents all environment variables that can be used to configure the Harpocrates backend service.
+
+| Variable Name | Type | Default | Bounds | Purpose | Secret? | Required in Production? |
+|---------------|------|---------|--------|---------|---------|-------------------------|
+| Variable Name | Type | Default | Bounds | Purpose | Secret? | Required in Production? |
+|---------------|------|---------|--------|---------|---------|-------------------------|
+| ADMISSION_TIMEOUT_SECONDS | float | 5.0 | must be positive | Timeout for admission control (seconds) | no | no |
+| ALLOW_WILDCARD_CORS | string |  |  | Allow wildcard CORS origins when set to 'true' (only effective in non-production) | no | no |
+| ANALYTICS_CONSENT_ENABLED | string |  |  | Enable or disable analytics consent check feature | no | no |
+| ANALYTICS_DURABLE_PATH | string |  |  | Path for durable analytics logs | no | no |
+| ANALYTICS_EXPORT_TOKEN_REQUIRED | string |  |  | Require export token for analytics data export | yes | no |
+| ANALYTICS_MAX_EVENT_BYTES | string |  |  | Maximum size of an analytics event in bytes | no | no |
+| ANALYTICS_MAX_LOG_ENTRIES | string |  |  | Maximum number of log entries per analytics request | no | no |
+| ANALYTICS_PERSISTENCE_ENABLED | string |  |  | Enable or disable analytics persistence to durable storage | no | no |
+| ANALYTICS_ROLLOUT | string | RolloutPhase.SHADOW |  | Analytics rollout phase (off, shadow, canary, full) | no | no |
+| ANALYTICS_SAMPLING_RATE | string |  |  | Sampling rate for analytics (0.0 to 1.0) | no | no |
+| ANALYTICS_SESSION_REPLAY_PROTECTION | string |  |  | Enable or disable analytics session replay protection | no | no |
+| APP_ENV | string | development |  | Application environment (development, production, etc.) | no | no |
+| CORS_ORIGINS | list of strings | http://localhost:5173,http://127.0.0.1:5173 |  | Comma-separated list of allowed CORS origins | no | no |
+| DATABASE_URL | string |  |  | PostgreSQL database connection URL | no | yes |
+| DB_CONNECT_DEADLINE_SECONDS | float | 15.0 | must be positive | Overall connection deadline for database retries (seconds) | no | no |
+| DB_CONNECT_MAX_ATTEMPTS | integer | 4 | must be positive | Maximum number of database connection attempts | no | no |
+| DB_CONNECT_RETRY_BASE_SECONDS | float | 0.05 | must be positive | Base backoff time for database connection retries (seconds) | no | no |
+| DB_CONNECT_TIMEOUT_SECONDS | float | 5.0 | must be positive | Per-attempt database connection timeout (seconds) | no | no |
+| EXPOSE_METADATA_HEADER | boolean | false |  | Expose metadata in HTTP response header (X-Harpocrates-Metadata) | no | no |
+| EXTERNAL_FETCH_CONNECT_TIMEOUT_SECONDS | float | 5.0 | must be positive | Timeout for establishing external evidence fetch connections (seconds) | no | no |
+| EXTERNAL_FETCH_MAX_RESPONSE_BYTES | integer | 65536 | must be positive | Maximum response body size for external evidence fetches (bytes) | no | no |
+| EXTERNAL_FETCH_READ_TIMEOUT_SECONDS | float | 10.0 | must be positive | Timeout for reading external evidence fetch responses (seconds) | no | no |
+| FLASK_DEBUG | string | false |  | Enable Flask debug mode | no | no |
+| HARPOCRATES_RELEASE_ID | string | harpocrates-1.0.0 |  | Release identifier for compatibility (must be 'harpocrates-1.0.0') | no | no |
+| HARPOCRATES_RELEASE_NETWORK | string | testnet |  | Stellar network to use (local, testnet, mainnet) | no | no |
+| HARPOCRATES_STORAGE_DIR | string | /tmp/harpocrates_jobs |  | Directory for storing temporary job files | no | no |
+| HOST | string | 127.0.0.1 |  | Host interface to bind the Flask server | no | no |
+| MASTER_ENCRYPTION_KEY | string |  |  | Base64-encoded encryption key for protecting data encryption keys (DEKs) | yes | yes |
+| MAX_CONCURRENT_PER_IDENTITY | integer | 5 | must be positive | Maximum concurrent requests per identity (API key or IP) | no | no |
+| MAX_CONCURRENT_REQUESTS | integer | 50 | must be positive | Maximum concurrent requests overall | no | no |
+| MAX_CONTENT_LENGTH | integer | 314572800 | must be positive | Maximum request body size in bytes | no | no |
+| MAX_JSON_BYTES | integer | 1048576 | must be positive | Maximum JSON request body size in bytes | no | no |
+| MAX_METADATA_BYTES | integer | 16384 | must be positive | Maximum metadata payload size in bytes | no | no |
+| MAX_QUEUE_SIZE | integer | 100 | must be positive | Maximum size of the request queue | no | no |
+| MAX_VIDEO_BYTES | integer | 262144000 | must be positive | Maximum video file upload size in bytes | no | no |
+| METRICS_ENABLED | boolean | true |  | Enable or disable the Prometheus metrics endpoint | no | no |
+| METRICS_PATH | string | /metrics |  | URL path for the Prometheus metrics endpoint | no | no |
+| METRICS_TOKEN | string |  |  | Authentication token for the metrics endpoint (Bearer token) | yes | no |
+| NOIR_PROOF_TIMEOUT_SECONDS | string | 300 |  | Timeout for Noir proof generation (seconds) | no | no |
+| NOIR_WORKER_ENABLED | boolean | app_env != "production" |  | Enable or disable the Noir worker for proof generation | no | no |
+| OTEL_ENABLED | boolean | false |  | Enable or disable OpenTelemetry tracing | no | no |
+| OTEL_EXPORTER_OTLP_TRACES_ENDPOINT | string |  |  | OTLP/HTTP endpoint for exporting traces | no | no |
+| OTEL_EXPORT_TIMEOUT_SECONDS | float | 5.0 | must be positive | Timeout for exporting traces (seconds) | no | no |
+| OTEL_SERVICE_NAME | string |  |  | Service name for OpenTelemetry traces | no | no |
+| OTEL_TRACES_SAMPLER_ARG | float | 0.1 | must be between 0 and 1 inclusive | Sampling ratio for OpenTelemetry traces (0.0 to 1.0) | no | no |
+| PORT | string | 5050 |  | Port to bind the Flask server | no | no |
+| RATELIMIT_EMBED | string |  |  | Rate limit for embed endpoint (flask-limiter format, e.g., '30 per minute') | no | no |
+| RATELIMIT_ENABLED | boolean | true |  | Enable or disable rate limiting | no | no |
+| RATELIMIT_EXTRACT | string |  |  | Rate limit for extract endpoint (flask-limiter format) | no | no |
+| RATELIMIT_REGISTER | string |  |  | Rate limit for register endpoint (flask-limiter format) | no | no |
+| RATELIMIT_SILENT_WITNESS | string |  |  | Rate limit for silent witness endpoint (flask-limiter format) | no | no |
+| RATELIMIT_STORAGE_URI | string | memory:// |  | Storage URI for rate limiting (e.g., 'redis://localhost:6379') | no | no |
+| RATELIMIT_UPLOAD_CHUNK | string |  |  | Rate limit for upload chunk endpoint (flask-limiter format) | no | no |
+| RATELIMIT_UPLOAD_SESSION | string |  |  | Rate limit for upload session endpoint (flask-limiter format) | no | no |
+| REGISTER_API_KEY | string |  |  | API key for proof registration (primary) | yes | yes |
+| REGISTER_API_KEY_EXPIRES | datetime string (ISO-8601 with timezone) |  |  | Expiration timestamp for the primary registration API key (ISO-8601) | yes | no |
+| REGISTER_API_KEY_PREVIOUS | string |  |  | Previous API key for proof registration (used during key rotation) | yes | no |
+| REGISTER_API_KEY_PREVIOUS_EXPIRES | datetime string (ISO-8601 with timezone) |  |  | Expiration timestamp for the previous registration API key (ISO-8601) | yes | no |
+| REGISTER_SCOPED_KEYS | string |  |  | Comma-separated list of owner-scoped keys (format: <address>:<token-digest>) | yes | no |
+| RETENTION_INTERVAL_SECONDS | integer | 3600 | must be positive | Interval between retention worker runs (seconds) | no | no |
+| RETENTION_WORKER_ENABLED | boolean | false |  | Enable or disable the retention worker | no | no |
+| SECURITY_HEADERS_ENABLED | boolean | true |  | Enable or disable security headers (X-Content-Type-Options, etc.) | no | no |
+| TRUSTED_PROXIES | list of strings |  |  | Comma-separated list of trusted proxy CIDR ranges for IP address resolution | no | no |
+| UPLOAD_CHUNK_BYTES | string |  |  | Size of upload chunks in bytes (clamped between 4096 and 1048576) | no | no |
+| VERIFIER_CACHE_MAX_SIZE | integer | 10000 | must be positive | Maximum number of entries in the verifier proof cache | no | no |
+| VERIFIER_CACHE_NEGATIVE_TTL_SECONDS | float | 300.0 | must be positive | Time-to-live for negative verifier cache entries (seconds) | no | no |
+| VERIFIER_CACHE_POSITIVE_TTL_SECONDS | float | 86400.0 | must be positive | Time-to-live for positive verifier cache entries (seconds) | no | no |
+
 ## Upload and Verification Load Test
 
 With FFmpeg installed and a local testing backend running, execute a bounded

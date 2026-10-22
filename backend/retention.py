@@ -76,6 +76,28 @@ class RetentionWorker:
                 {"event": "retention_job_files_error", "error_type": type(error).__name__},
             )
 
+        config = load_config()
+        if getattr(config, "retention_blob_gc_enabled", False) or getattr(config, "retention_unreferenced_blobs_enabled", False):
+            try:
+                from evidence_storage import collect_unreferenced_blobs
+                while True:
+                    purged_blobs = collect_unreferenced_blobs(limit=self.batch_size)
+                    if purged_blobs > 0:
+                        log_structured(
+                            LOGGER,
+                            logging.INFO,
+                            {"event": "retention_blobs_purged", "count": purged_blobs},
+                        )
+                    if purged_blobs < self.batch_size:
+                        break
+            except Exception as error:
+                log_structured(
+                    LOGGER,
+                    logging.ERROR,
+                    {"event": "retention_blobs_error", "error_type": type(error).__name__},
+                )
+
+
 _worker: RetentionWorker | None = None
 
 def init_retention_worker() -> None:

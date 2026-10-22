@@ -20,7 +20,7 @@ This document records the accessibility implementation for the Harpocrates front
 | Criterion | Implementation |
 |-----------|----------------|
 | 1.1.1 Non-text Content | SVG workflow diagram has `<title>` and `aria-labelledby`; decorative icons use `aria-hidden="true"`; EvilEye WebGL canvas container is `aria-hidden="true"` |
-| 1.3.1 Info and Relationships | Nav uses `<nav aria-label="Site navigation">`; tier tabs use `role="group"`; seed inputs have explicit `<label htmlFor>`; `<dl>` has `aria-label`; event list uses `role="list"` with `role="listitem"` |
+| 1.3.1 Info and Relationships | Nav uses `<nav aria-label="Site navigation">`; tier tabs and batch filter tabs use `role="group"`; seed inputs have explicit `<label htmlFor>`; `<dl>` has `aria-label`; event list uses `role="list"` with `role="listitem"` |
 | 1.3.3 Sensory Characteristics | Selected tier indicated by `aria-pressed` (not colour alone); active tier tab also has `box-shadow` border, not just background colour |
 | 1.4.1 Use of Colour | Tier tab active state adds `box-shadow: inset 0 0 0 1px rgba(255,255,255,0.38)` in addition to background change |
 | 1.4.3 Contrast (Minimum) | Data-list `dt` raised from 0.38 to 0.62 opacity (~4.5:1 on dark background); `dd` raised to 0.92; page header sub-text raised to 0.72; lede text raised to 0.78; rail block headings raised to 0.62 |
@@ -172,12 +172,15 @@ npm test
 ```bash
 cd frontend
 npm run test:a11y
-# Expected: src/a11y.axe.test.tsx — 10 tests, all pass
+# Expected: src/a11y.axe.test.tsx — 13 tests, all pass
 ```
 
 The axe suite renders each public view (landing, evidence studio × both tiers,
 verify, batch workspace) and asserts that no WCAG-tagged rule reports a
-violation, using the shared configuration in `src/test/axeA11y.ts`. It also
+violation, using the shared configuration in `src/test/axeA11y.ts`. The batch
+workspace is additionally scanned in its idle, in-progress and completed states,
+driven by a `BatchVerifier` double that scripts the progress callbacks so no
+media hashing or registry call is involved. The suite also
 proves the harness has teeth (a synthetic broken-tree fixture must be flagged),
 bounds the only jsdom-unrunnable rule (`color-contrast`), and fails closed if a
 new "incomplete" rule ever appears without a documented acknowledgement. See
@@ -239,7 +242,8 @@ the rendered app before merge.
   tag set, executed by `axe-core` (`src/test/axeA11y.ts`).
 - **Views scanned:** landing, evidence studio with the silent tier (credential
   and nullifier seed inputs rendered) and the source tier, verify, and batch
-  verification workspace — each asserted to report zero violations.
+  verification workspace in its idle, in-progress and completed states — each
+  asserted to report zero violations.
 - **jsdom limitation:** `color-contrast` requires real computed layout and is
   the only documented `MANUAL_ONLY_RULES` entry. It is enforced by the manual
   contrast checklist in this document instead.
@@ -250,9 +254,11 @@ the rendered app before merge.
 
 ### Privacy
 
-The suite renders only idle application states with synthetic fixture data —
-no real video media, seeds, proof witnesses, credentials, or private keys are
-involved, and violation messages are never logged with sensitive material. The
+The suite renders application states with synthetic fixture data only — no real
+video media, seeds, proof witnesses, credentials, or private keys are involved,
+and violation messages are never logged with sensitive material. The batch
+workspace states are driven by a `BatchVerifier` double over byte-filled `File`
+fixtures, so no hashing or registry request happens. The
 negative "the harness has teeth" test uses inline browser-style markup only.
 
 ### Version, migration, and rollback
@@ -380,6 +386,9 @@ Each nav button (`Evidence`, `Verify`, `Batch Workspace`) has `aria-current="pag
 
 | File | Change |
 |------|--------|
+| `src/a11y.axe.test.tsx` | Updated: renders `BatchVerificationWorkspace` in idle, in-progress and completed states against a scripted `BatchVerifier` |
+| `src/components/BatchVerificationWorkspace.tsx` | Updated: file input is a labelled sibling of the dropzone instead of nested inside its `role="button"` (axe `nested-interactive`); filter tab group carries `role="group"` (axe `aria-prohibited-attr`) |
+| `src/components/BatchVerificationWorkspace.test.tsx` | Updated: file-input lookups target the input element directly |
 | `src/hooks/useA11y.ts` | Existing: four accessibility hooks with privacy-safe sanitiser |
 | `src/hooks/useA11y.test.ts` | Existing: 27 unit tests for hook logic and negative paths |
 | `src/App.tsx` | Updated: aria-live regions, skip link, focus management, aria-current on nav, aria-label on nav |

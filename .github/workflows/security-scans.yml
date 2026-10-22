@@ -95,3 +95,21 @@ jobs:
       - name: Validate Deployment Containers
         run: python3 devx/validate_deployment_containers.py --check
 
+  markdown-link-check:
+    name: Markdown Link & Anchor Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Check Relative Markdown Links
+        run: python3 devx/check_markdown_links.py
+
+      - name: Run Markdown Link Checker Unit Tests
+        run: python3 -m unittest devx/test_check_markdown_links.py -v
+

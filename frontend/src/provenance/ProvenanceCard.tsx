@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import type { ProvenanceRecord } from './provenanceModel'
+import { disputeNotice, type ProvenanceRecord } from './provenanceModel'
 
 type ProvenanceCardProps = {
   provenance: ProvenanceRecord
@@ -62,6 +62,7 @@ export default function ProvenanceCard({ provenance }: ProvenanceCardProps) {
   const warningMessage = [mismatchSummary(provenance), stalenessSummary(provenance)]
     .filter(Boolean)
     .join(' ')
+  const disputeMessage = disputeNotice(provenance)
 
   async function copyProvenance() {
     try {
@@ -108,6 +109,13 @@ export default function ProvenanceCard({ provenance }: ProvenanceCardProps) {
         </div>
       ) : null}
 
+      {disputeMessage ? (
+        <div className="provenance-dispute" role="status" aria-live="polite" data-testid="provenance-dispute">
+          <strong>Under dispute</strong>
+          <p>{disputeMessage}</p>
+        </div>
+      ) : null}
+
       <dl className="provenance-grid">
         <div>
           <dt>Circuit</dt>
@@ -115,6 +123,12 @@ export default function ProvenanceCard({ provenance }: ProvenanceCardProps) {
             {provenance.circuit.name} v{provenance.circuit.version}
           </dd>
         </div>
+        {provenance.circuitVersion !== undefined && provenance.circuitVersion !== null ? (
+          <div>
+            <dt>Circuit version</dt>
+            <dd>{provenance.circuitVersion}</dd>
+          </div>
+        ) : null}
         <div>
           <dt>Verifier</dt>
           <dd>

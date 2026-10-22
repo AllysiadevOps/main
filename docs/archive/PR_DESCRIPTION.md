@@ -1,3 +1,9 @@
+# Historical Archive: PR Description Scratch
+
+> **Historical Archive**: This document is an unmaintained historical working note / PR scratch file preserved for reference. It is not part of the active protocol documentation.
+
+---
+
 # fix(frontend): cap proof-worker memory
 
 ## Summary

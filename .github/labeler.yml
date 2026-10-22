@@ -54,6 +54,7 @@ layer/devx:
       - "devx/**"
       - "release/**"
       - "scripts/**"
+      - "changelog.d/**"
 
 # ── impact/* auto-labels ─────────────────────────────────────────────────────
 

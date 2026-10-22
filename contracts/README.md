@@ -8,11 +8,16 @@ This workspace contains the Stellar Soroban contracts for Harpocrates.
 contracts/harpocrates-registry
 ```
 
-`HarpocratesRegistry` stores evidence records for all identity tiers:
+[`HarpocratesRegistry`] stores evidence records for all identity tiers:
 
 - Tier 1 Silent Witness: anonymous Noir proof with nullifier protection.
 - Tier 2 Consistent Source: Stellar account signed source.
 - Tier 3 Public Seal: approved institutional issuer.
+
+For `add_schema` and `verify_selective_disclosure`, see the
+[Selective Disclosure specification](../docs/zk-selective-disclosure-spec.md)
+for the circuit statement, 352-byte public-input layout, schema/version checks,
+binding limits, and a reproducible age/country example.
 
 ## Build
 
@@ -20,6 +25,23 @@ contracts/harpocrates-registry
 cargo test
 stellar contract build
 ```
+
+## Contract Version
+
+The registry exposes the crate release version on-chain via:
+
+```text
+version -> String
+```
+
+It returns the value of `env!("CARGO_PKG_VERSION")` from
+`contracts/contracts/harpocrates-registry/Cargo.toml`, so clients can
+confirm which contract release is deployed. This is distinct from
+the data-layout versions reported by `get_schema_version` and
+`get_storage_schema_version`.
+
+The function performs no storage access and requires no authorization,
+so it is safe to call from any client or monitoring probe.
 
 ## Contract Wasm Size Budget
 
@@ -52,7 +74,7 @@ cd contracts/contracts/harpocrates-registry
 make wasm-budget
 ```
 
-The module is host-side only (`#[cfg(not(target_arch = "wasm32"))]`), so the
+The module is host-side only (`#[config(not(target_arch = "wasm32"))]`), so the
 deployed artifact stays byte-identical to the pre-budget build, and no
 exported contract function, storage key, or event schema changes. The
 recorded baseline also pins the artifact's SHA-256 digest as an audit trail
@@ -62,7 +84,7 @@ and the budget module; no on-chain repair is required.
 ## Identity-Tier Property Tests
 
 Issue #345 adds focused property tests for identity-tier invariants in
-`contracts/harpocrates-registry/src/test_identity_tier_properties.rs`.
+`contracts/harpocrates-registry/src/test_identity_tier_properties.r`.
 
 The harness uses a deterministic LCG over reproducible seeds to generate
 registration sequences across Silent Witness (tier 1), Consistent Source
@@ -90,7 +112,7 @@ storage keys, or on-chain migration behavior.
 ## Registry State-Machine Fuzzing
 
 Issue #93 adds deterministic state-machine fuzzing for the registry contract in
-`contracts/harpocrates-registry/src/test_state_machine.rs`. The harness drives
+`contracts/harpocrates-registry/src/test_state_machine.r`. The harness drives
 the real Soroban contract boundary with bounded authorized and adversarial
 command streams, including duplicate proof/video/nullifier attempts, wrong
 admins, revoked and unknown issuers, invalid and oversized public inputs,
@@ -101,9 +123,9 @@ timed-out, or partial operations that must not reach contract storage.
 The oracle is an explicit model of registry storage and status semantics. After
 every generated command it checks:
 
-- `Proof`, `Video`, `Nullifier`, `Issuer`, `CredentialRoot`, `Verifier`,
+-` Proof`, `Video`, `Nullifier`, `Issuer`, `CredentialRoot`, `Verifier`,
   `ProofTtl`, and `RevocationRoot` query results match the model.
-- `get_proof_status` returns `Valid`, `Expired`, `Revoked`, or `NotFound`
+- `get_proof_status` returns `Valid`, `Expired`, `Revoked`, or `NotFound
   according to the modeled timestamp, TTL, and revocation state.
 - rejected transitions return the expected `RegistryError`, emit no contract
   event, and leave storage unchanged.
@@ -114,7 +136,7 @@ every generated command it checks:
 
 The CI corpus is the combination of curated adversarial sequences and fixed
 generated seeds in `REGRESSION_SEEDS`; it runs as part of normal
-`cargo test --workspace`, so no workflow or dependency upgrade is required.
+cargo test --workspace`, so no workflow or dependency upgrade is required.
 Local expansion is opt-in:
 
 ```bash
@@ -133,7 +155,7 @@ The model uses deterministic slot numbers and synthetic hashes only.
 ## Upgrade Compatibility Harness
 
 Issue #347 adds a focused upgrade compatibility harness in
-`contracts/harpocrates-registry/src/test_upgrade_compat.rs`. It drives the
+`contracts/harpocrates-registry/src/test_upgrade_compat.r`. It drives the
 real `upgrade_storage` / `get_storage_schema_version` boundary with:
 
 - positive V1 init + idempotent upgrade calls
@@ -191,13 +213,13 @@ Production observers continue to rely on existing typed events:
 ["issuer", "add", issuer]         => metadata_hash
 ["issuer", "revoke", issuer]      => {}
 ["verif", "set", verifier]        => {}
-["credroot", "add", root]         => metadata_hash, issued_at
-["credroot", "revoke", root]      => {}
+["credroot", "add", root]       => metadata_hash, issued_at
+["credroot", "revoke", root]    => {}
 ["admin", "propose", pending]     => current_admin
 ["admin", "cancel", pending]      => current_admin
-["admin", "accept", new_admin]    => previous_admin
+["admin", "accept", new_admin]     => previous_admin
 ["revroot", "set", root]          => {}
-["nonrev", "check", root]         => nullifier, revocation_root
+["nonrev", "check", root]        => nullifier, revocation_root
 ```
 
 Failures are observable as deterministic transaction reverts with typed
@@ -282,6 +304,7 @@ pause
 unpause
 is_paused
 get_pause_state
+version
 ```
 
 ## Staged verifier rotation

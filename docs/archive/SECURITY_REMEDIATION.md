@@ -1,3 +1,9 @@
+# Historical Archive: Security Remediation & Policy
+
+> **Historical Archive**: This document is an unmaintained historical working note preserved for reference. For current maintained security policies and vulnerability reporting procedures, refer to [SECURITY.md](../../SECURITY.md).
+
+---
+
 # Security Remediation & Policy
 
 This repository utilizes automated secret scanning (TruffleHog) and dependency auditing (`npm audit`, `pip-audit`, `cargo-audit`) on all pull requests.

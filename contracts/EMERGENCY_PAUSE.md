@@ -85,9 +85,9 @@ paused   --pause(caller, domain, duration)---> paused (expires_at overwritten/ex
 
 | Code | Name                  | When                                                        |
 |------|------------------------|--------------------------------------------------------------|
-| 13   | `Paused`               | A registration call hit a domain with an unexpired pause.    |
-| 14   | `InvalidPauseDomain`   | `domain` was `0` or contained bits outside the known set.    |
-| 15   | `InvalidPauseDuration` | `duration_secs` was `0` or exceeded the caller's role cap.   |
+| 21   | `Paused`               | A registration call hit a domain with an unexpired pause.    |
+| 22   | `InvalidPauseDomain`   | `domain` was `0` or contained bits outside the known set.    |
+| 23   | `InvalidPauseDuration` | `duration_secs` was `0` or exceeded the caller's role cap.   |
 
 ## Event Schema
 
@@ -153,15 +153,15 @@ No new deployment step is required. To use the feature after upgrading:
 
 ## Troubleshooting
 
-- **`Error(Contract, #13)` (`Paused`) on a register call**: expected —
+- **`Error(Contract, #21)` (`Paused`) on a register call**: expected —
   that tier's registration is currently paused. Call `is_paused` for the
   relevant domain, or `get_pause_state` for the exact `expires_at`, to see
   when it lifts (or have the admin `unpause` early).
-- **`Error(Contract, #14)` (`InvalidPauseDomain`)**: the `domain` argument
+- **`Error(Contract, #22)` (`InvalidPauseDomain`)**: the `domain` argument
   was `0` or included bits outside `PAUSE_DOMAIN_TIER1_REGISTRATION |
   PAUSE_DOMAIN_TIER2_REGISTRATION | PAUSE_DOMAIN_TIER3_REGISTRATION`.
   `get_pause_state` additionally requires a single bit, not a composite.
-- **`Error(Contract, #15)` (`InvalidPauseDuration`)**: `duration_secs` was
+- **`Error(Contract, #23)` (`InvalidPauseDuration`)**: `duration_secs` was
   `0`, or exceeded `MAX_PAUSE_DURATION_SECS` (admin) /
   `MAX_GUARDIAN_PAUSE_DURATION_SECS` (guardian). Guardians who need a
   longer pause should escalate to the admin.

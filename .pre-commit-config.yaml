@@ -1,0 +1,51 @@
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-added-large-files
+      - id: check-merge-conflict
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^(backend|devx|zk)/.*\.py$
+      - id: ruff-format
+        files: ^(backend|devx|zk)/.*\.py$
+
+  - repo: https://github.com/pre-commit/mirrors-eslint
+    rev: v9.17.0
+    hooks:
+      - id: eslint
+        files: \.(js|jsx|ts|tsx)$
+        args: [--fix]
+        additional_dependencies:
+          - eslint@9.17.0
+          - typescript@5.7.2
+          - typescript-eslint@8.18.2
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+        always_run: false
+        files: ^contracts/
+
+      - id: secret-scanner
+        name: secret scanner
+        entry: python devx/secret_scanner.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]

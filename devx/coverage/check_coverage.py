@@ -10,10 +10,12 @@ malformed, or falls short of any published metric.
 Supported report formats:
   * "coverage_py"      -- `coverage json` output (Python / pytest-cov)
   * "istanbul_summary" -- vitest/istanbul `coverage-summary.json` output
+  * "llvm_cov_json"    -- `cargo llvm-cov --json` output (LLVM coverage JSON)
 
 Usage:
     python3 devx/coverage/check_coverage.py --workspace backend --report backend/coverage.json
     python3 devx/coverage/check_coverage.py --workspace frontend --report frontend/coverage/coverage-summary.json
+    python3 devx/coverage/check_coverage.py --workspace contracts --report contracts/coverage.json
     python3 devx/coverage/check_coverage.py --lint-thresholds
 """
 from __future__ import annotations
@@ -25,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 THRESHOLDS_DIR = Path(__file__).resolve().parent / "thresholds"
-KNOWN_FORMATS = {"coverage_py", "istanbul_summary"}
+KNOWN_FORMATS = {"coverage_py", "istanbul_summary", "llvm_cov_json"}
 METRIC_MIN, METRIC_MAX = 0, 100
 
 
@@ -87,9 +89,27 @@ def _istanbul_summary_metrics(report: dict[str, Any]) -> dict[str, float]:
     return metrics
 
 
+def _llvm_cov_json_metrics(report: dict[str, Any]) -> dict[str, float]:
+    try:
+        data = report["data"]
+        if not isinstance(data, list) or not data:
+            raise CoverageCheckError("llvm_cov_json report data array is missing or empty")
+        totals = data[0]["totals"]
+        metrics = {}
+        for key in ("lines", "regions", "functions", "branches", "instantiations"):
+            if key in totals and isinstance(totals[key], dict) and "percent" in totals[key]:
+                metrics[key] = float(totals[key]["percent"])
+        if not metrics:
+            raise CoverageCheckError("llvm_cov_json report totals object has no recognized metrics")
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise CoverageCheckError(f"llvm_cov_json report is missing expected totals: {exc}") from exc
+    return metrics
+
+
 _PARSERS = {
     "coverage_py": _coverage_py_metrics,
     "istanbul_summary": _istanbul_summary_metrics,
+    "llvm_cov_json": _llvm_cov_json_metrics,
 }
 
 

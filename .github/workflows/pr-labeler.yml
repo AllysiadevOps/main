@@ -1,5 +1,8 @@
 name: PR labeler
 
+# NOTE: This workflow is intentionally minimal and does not use the standard
+# error envelope; it is a CI configuration file, not a backend endpoint.
+#
 # Automatically applies change-impact and layer labels to pull requests based
 # on the files they modify, using the path mappings in .github/labeler.yml.
 #
@@ -37,7 +40,7 @@ jobs:
       - name: Check out base repository
         # Checkout the base ref (main), NOT the fork head, so we never execute
         # untrusted code from a contributor's fork in this privileged context.
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.base.sha }}
 
@@ -53,7 +56,7 @@ jobs:
             .github/labeler.yml .github/labels.yml
 
       - name: Apply labels from path mappings
-        uses: actions/labeler@v5
+        uses: actions/labeler@v7
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           configuration-path: .github/labeler.yml

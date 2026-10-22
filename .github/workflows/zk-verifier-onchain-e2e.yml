@@ -1,0 +1,110 @@
+name: ZK On-Chain Verifier E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_temp:
+        description: "Preserve temporary build artifacts on failure"
+        type: boolean
+        default: false
+  schedule:
+    # Run nightly at 04:00 UTC due to runtime
+    - cron: "0 4 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zk-verifier-onchain-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e-zk-onchain-verifier:
+    name: Verify UltraHonk proofs on local Soroban node
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/target
+          key: ${{ runner.os }}-cargo-contracts-${{ hashFiles('contracts/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-contracts-
+
+      - name: Install Stellar CLI
+        run: |
+          curl -fsSL https://github.com/stellar/stellar-cli/releases/latest/download/stellar-cli-ubuntu-x86_64.tar.gz \
+            | sudo tar xz -C /usr/local/bin stellar
+          stellar version
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Cache frontend node_modules
+        uses: actions/cache@v6
+        with:
+          path: frontend/node_modules
+          key: ${{ runner.os }}-node-frontend-${{ hashFiles('frontend/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-frontend-
+
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Run ZK On-Chain Verifier E2E Test Harness
+        id: run_e2e
+        env:
+          STELLAR_NETWORK: local
+          KEEP_TEMP: ${{ inputs.keep_temp || 'false' }}
+        run: |
+          chmod +x zk/regression/test_onchain_verifier_e2e.sh
+          START_SECONDS=$(date +%s)
+          ./zk/regression/test_onchain_verifier_e2e.sh | tee test_onchain_verifier_e2e.log
+          END_SECONDS=$(date +%s)
+          DURATION=$((END_SECONDS - START_SECONDS))
+          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
+
+      - name: Report run summary
+        if: always()
+        run: |
+          cat << 'EOF' >> "$GITHUB_STEP_SUMMARY"
+          ## ZK On-Chain Verifier E2E Results
+
+          - **Target**: Local Soroban standalone node (`stellar container`)
+          - **Prover**: `@noir-lang/noir_js` (1.0.0-beta.9) + `@aztec/bb.js` (0.87.0)
+          - **Circuit Artifact**: `frontend/public/noir/silent_witness.json`
+          - **Verifier**: `NethermindEth/rs-soroban-ultrahonk` (`9aae9581eab7bc4c69209c0322e54e119ed3180e`)
+          - **Registry**: `contracts/contracts/harpocrates-registry`
+          - **Wall-clock Duration**: ${{ steps.run_e2e.outputs.duration || 'N/A' }} seconds
+          - **Status**: ${{ job.status == 'success' && 'Passed ✅' || 'Failed ❌' }}
+
+          ### Verified Properties
+          1. Valid proof generated from browser artifact registers on-chain via `register_anonymous_verified`.
+          2. Tampered public input / proof fails closed with `InvalidProof` (`Error(Contract, #7)`).
+          EOF
+
+      - name: Upload execution log on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: zk-onchain-verifier-e2e-failure-${{ github.run_id }}
+          path: test_onchain_verifier_e2e.log
+          if-no-files-found: warn
+          retention-days: 7

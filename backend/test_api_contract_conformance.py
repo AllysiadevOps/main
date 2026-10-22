@@ -755,6 +755,31 @@ class SuccessEnvelopeConformanceTest(unittest.TestCase):
         self.assertEqual(body["checks"], {"evidence_binding": True})
         self.assertEqual(body["request_id"], response.headers["X-Request-ID"])
 
+    def test_job_status_contract(self) -> None:
+        # GET /api/jobs/<id> (issue #803): documented fields, ``progress`` is
+        # null until a processor reports it, and the request payload is never
+        # part of the response.
+        import db
+
+        job_id = db.enqueue_job("embed", {"filename": "clip.mp4", "metadata": {"proofId": HEX_32}})
+        self.addCleanup(db._JOBS.pop, job_id, None)
+        response = self.client.get(f"/api/jobs/{job_id}")
+        self.assertEqual(response.status_code, 200)
+        body = _get_json(response)
+        self.assertIs(body["ok"], True)
+        job = body["job"]
+        for field in ("id", "type", "status", "result", "progress", "created_at"):
+            self.assertIn(field, job)
+        self.assertIsNone(job["progress"])
+        self.assertNotIn("payload", job)
+        self.assertFalse([key for key in job if key.startswith("_")])
+        self.assertNotIn(HEX_32, response.get_data(as_text=True))
+
+        db._JOBS[job_id]["status"] = "running"
+        db.report_job_progress(job_id, "embedding", 50, now=1.0)
+        job = _get_json(self.client.get(f"/api/jobs/{job_id}"))["job"]
+        self.assertEqual(job["progress"], {"phase": "embedding", "percent": 50.0})
+
     def test_request_id_propagates_to_every_json_object_body(self) -> None:
         for method, path in (
             ("get", "/health"),

@@ -585,3 +585,194 @@ fn revocation_depth_bound_constants() {
     assert_eq!(MAX_REVOCATION_LEAVES, 8);
     assert_eq!(MAX_REVOCATION_LEAVES, 1u32 << MAX_REVOCATION_WITNESS_DEPTH);
 }
+
+// ---------------------------------------------------------------------------
+// Batch proof revocation (#revoke_proofs)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_revoke_proofs_success_matches_single_revoke() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let source = Address::generate(&env);
+
+    client.init(&admin);
+
+    // Register a reference proof to revoke with single-revoke
+    let ref_proof_id = b32(&env, 0x10);
+    client.register_source(
+        &source,
+        &b32(&env, 0x11),
+        &b32(&env, 0x12),
+        &ref_proof_id,
+    );
+    client.revoke_proof(&admin, &ref_proof_id);
+
+    // Register 3 proofs to revoke via batch revoke_proofs
+    let proof1 = b32(&env, 0x20);
+    let proof2 = b32(&env, 0x21);
+    let proof3 = b32(&env, 0x22);
+
+    client.register_source(&source, &b32(&env, 0x31), &b32(&env, 0x41), &proof1);
+    client.register_source(&source, &b32(&env, 0x32), &b32(&env, 0x42), &proof2);
+    client.register_source(&source, &b32(&env, 0x33), &b32(&env, 0x43), &proof3);
+
+    let mut batch = SorobanVec::new(&env);
+    batch.push_back(proof1.clone());
+    batch.push_back(proof2.clone());
+    batch.push_back(proof3.clone());
+
+    client.revoke_proofs(&admin, &batch, &1);
+
+    // Assert each proof status matches single revoke
+    assert_eq!(
+        client.get_proof_status(&ref_proof_id),
+        ProofVerificationStatus::Revoked
+    );
+    for pid in [proof1.clone(), proof2.clone(), proof3.clone()].iter() {
+        assert_eq!(client.get_proof_status(pid), ProofVerificationStatus::Revoked);
+        assert_eq!(client.get_proof_history_count(pid), 2);
+
+        let ref_entry = client.get_proof_history_at(&ref_proof_id, &2).unwrap();
+        let batch_entry = client.get_proof_history_at(pid, &2).unwrap();
+
+        assert_eq!(batch_entry.action, ref_entry.action);
+        assert_eq!(batch_entry.action, ProofLifecycleAction::Revoked as u32);
+        assert_eq!(batch_entry.actor, ref_entry.actor);
+        assert_eq!(batch_entry.actor, Some(admin.clone()));
+        assert_eq!(batch_entry.reason_code, ref_entry.reason_code);
+        assert_eq!(batch_entry.reason_code, 1);
+    }
+}
+
+#[test]
+fn test_revoke_proofs_custom_reason_code() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let source = Address::generate(&env);
+
+    client.init(&admin);
+
+    let proof_id = b32(&env, 0x55);
+    client.register_source(&source, &b32(&env, 0x56), &b32(&env, 0x57), &proof_id);
+
+    let mut batch = SorobanVec::new(&env);
+    batch.push_back(proof_id.clone());
+
+    client.revoke_proofs(&admin, &batch, &42);
+
+    let entry = client.get_proof_history_at(&proof_id, &2).unwrap();
+    assert_eq!(entry.action, ProofLifecycleAction::Revoked as u32);
+    assert_eq!(entry.reason_code, 42);
+    assert_eq!(entry.actor, Some(admin));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #43)")] // BatchTooLarge
+fn test_revoke_proofs_oversized_batch_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    client.init(&admin);
+
+    let mut batch = SorobanVec::new(&env);
+    for i in 0..(MAX_REVOKE_PROOFS_BATCH_SIZE + 1) {
+        batch.push_back(b32(&env, i as u8));
+    }
+
+    client.revoke_proofs(&admin, &batch, &1);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #15)")] // InvalidReasonCode
+fn test_revoke_proofs_invalid_reason_code_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    client.init(&admin);
+
+    let mut batch = SorobanVec::new(&env);
+    batch.push_back(b32(&env, 0x01));
+
+    client.revoke_proofs(&admin, &batch, &256);
+}
+
+#[test]
+fn test_revoke_proofs_atomic_failure_on_invalid_proof() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let source = Address::generate(&env);
+
+    client.init(&admin);
+
+    let valid_proof = b32(&env, 0x71);
+    client.register_source(&source, &b32(&env, 0x72), &b32(&env, 0x73), &valid_proof);
+
+    let invalid_proof = b32(&env, 0x99); // never registered
+
+    let mut batch = SorobanVec::new(&env);
+    batch.push_back(valid_proof.clone());
+    batch.push_back(invalid_proof);
+
+    let res = client.try_revoke_proofs(&admin, &batch, &1);
+    assert!(res.is_err(), "expected batch revocation to fail on invalid proof");
+
+    // Atomicity check: valid_proof must NOT have been revoked
+    assert_eq!(
+        client.get_proof_status(&valid_proof),
+        ProofVerificationStatus::Valid
+    );
+    assert_eq!(client.get_proof_history_count(&valid_proof), 1);
+}
+
+#[test]
+fn test_revoke_proofs_at_capacity() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let source = Address::generate(&env);
+
+    client.init(&admin);
+
+    let mut batch = SorobanVec::new(&env);
+    for i in 0..MAX_REVOKE_PROOFS_BATCH_SIZE as u8 {
+        let pid = b32(&env, 0x80 + i);
+        client.register_source(
+            &source,
+            &b32(&env, 0x10 + i),
+            &b32(&env, 0x20 + i),
+            &pid,
+        );
+        batch.push_back(pid);
+    }
+
+    client.revoke_proofs(&admin, &batch, &1);
+
+    for i in 0..MAX_REVOKE_PROOFS_BATCH_SIZE as u8 {
+        let pid = b32(&env, 0x80 + i);
+        assert_eq!(client.get_proof_status(&pid), ProofVerificationStatus::Revoked);
+    }
+}

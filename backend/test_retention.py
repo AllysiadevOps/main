@@ -365,3 +365,53 @@ def test_retention_worker_purges_across_pages(setup_db):
             assert cursor.fetchone()["c"] == 0
             cursor.execute("select count(*) as c from deletion_receipts")
             assert cursor.fetchone()["c"] == 260
+
+
+def test_retention_worker_blob_gc_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("RETENTION_BLOB_GC_ENABLED", raising=False)
+    monkeypatch.delenv("HARPOCRATES_RETENTION_BLOB_GC_ENABLED", raising=False)
+    monkeypatch.delenv("RETENTION_UNREFERENCED_BLOBS_ENABLED", raising=False)
+    monkeypatch.delenv("HARPOCRATES_RETENTION_UNREFERENCED_BLOBS_ENABLED", raising=False)
+
+    worker = RetentionWorker(interval_seconds=60, batch_size=50)
+
+    mock_storage = MagicMock()
+    mock_storage.sweep_job_files.return_value = 0
+    monkeypatch.setitem(sys.modules, "storage", mock_storage)
+
+    with patch("retention.purge_expired_events", return_value=[]), \
+         patch("evidence_storage.collect_unreferenced_blobs") as mock_collect:
+        worker._purge()
+        mock_collect.assert_not_called()
+
+
+def test_retention_worker_blob_gc_invoked_when_enabled(monkeypatch):
+    monkeypatch.setenv("RETENTION_BLOB_GC_ENABLED", "true")
+
+    worker = RetentionWorker(interval_seconds=60, batch_size=50)
+
+    mock_storage = MagicMock()
+    mock_storage.sweep_job_files.return_value = 0
+    monkeypatch.setitem(sys.modules, "storage", mock_storage)
+
+    with patch("retention.purge_expired_events", return_value=[]), \
+         patch("evidence_storage.collect_unreferenced_blobs", return_value=0) as mock_collect:
+        worker._purge()
+        mock_collect.assert_called_once_with(limit=50)
+
+
+def test_retention_worker_blob_gc_handles_error_gracefully(monkeypatch):
+    monkeypatch.setenv("RETENTION_BLOB_GC_ENABLED", "true")
+
+    worker = RetentionWorker(interval_seconds=60, batch_size=50)
+
+    mock_storage = MagicMock()
+    mock_storage.sweep_job_files.return_value = 0
+    monkeypatch.setitem(sys.modules, "storage", mock_storage)
+
+    with patch("retention.purge_expired_events", return_value=[]), \
+         patch("evidence_storage.collect_unreferenced_blobs", side_effect=RuntimeError("db error")):
+        # Should not raise exception
+        worker._purge()
+
+

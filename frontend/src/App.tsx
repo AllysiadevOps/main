@@ -1,14 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react'
 import { Wallet, X } from 'lucide-react'
 import EvilEye from './components/EvilEye'
-import BatchVerificationWorkspace from './components/BatchVerificationWorkspace'
+import { LazyFallback } from './components/LazyFallback'
 import { LandingView } from './views/LandingView'
-import { StudioView } from './views/StudioView'
 import { VerifyView } from './views/VerifyView'
 import { useWallet } from './hooks/useWallet'
 import { useEvidence } from './hooks/useEvidence'
 import { useVerification } from './hooks/useVerification'
 import { useLiveRegion, useAa11Stage, useSkipLink } from './hooks/useAa11'
+import { useOpenDisputeCount } from './hooks/useOpenDisputeCount'
 import type { IdentityTier } from './types'
 import type { View } from './types'
 import { createProofManifest } from './proofManifest'
@@ -23,7 +23,19 @@ const API_BASE = appConfig.apiBase
 const CONTRACT_ID = appConfig.harpocratesRegistryId
 const RPC_URL = appConfig.stellarRpcUrl
 
+const StudioView = lazy(() => import('./views/StudioView').then(({ StudioView }) => ({ default: StudioView })))
+const BatchVerificationWorkspace = lazy(() =>
+  import('./components/BatchVerificationWorkspace').then(({ default: BatchVerificationWorkspace }) => ({ default: BatchVerificationWorkspace })),
+)
+
 type AppView = View | 'batch'
+
+const VIEW_TITLES: Record<AppView, string> = {
+  landing: 'Harpocrates',
+  studio: 'Evidence Studio - Harpocrates',
+  verify: 'Verify evidence - Harpocrates',
+  batch: 'Batch Workspace - Harpocrates',
+}
 
 function methodForTier(tier: IdentityTier) {
   if (tier === 'silent') return 'register_anonymous_verified'
@@ -48,6 +60,10 @@ function App() {
   const [isScrolled, setIsScrolled] = useState(false)
   const [releaseCompatibility] = useState<ReleaseCompatibilityResult>(() => checkReleaseCompatibility())
   const [releaseCompatibilityDismissed, setReleaseCompatibilityDismissed] = useState(false)
+
+  useEffect(() => {
+    document.title = VIEW_TITLES[currentView]
+  }, [currentView])
 
   const { wallet, networkMismatch: walletNetworkMismatch, connectWallet } = useWallet()
   const evidence = useEvidence()
@@ -90,6 +106,12 @@ function App() {
     return () => clearTimeout(timer)
   }, [viewHeadingId])
 
+  const openDisputeCount = useOpenDisputeCount({
+    proofId: evidence.proof?.proofId ?? null,
+    sourceAddress: wallet || undefined,
+    contractId: CONTRACT_ID,
+  })
+
   const provenanceRecord = useMemo(() => {
     if (!evidence.proof) return null
 
@@ -109,8 +131,9 @@ function App() {
       rpcUrl: RPC_URL,
       transactionHash: evidence.registration?.hash ?? null,
       method: methodForTier(evidence.proof.tier),
+      openDisputeCount,
     })
-  }, [evidence.proof, evidence.registration?.hash, verification.chainProof])
+  }, [evidence.proof, evidence.registration?.hash, verification.chainProof, openDisputeCount])
 
   useEffect(() => {
     const updateScrollState = () => setIsScrolled(window.scrollY > 36)
@@ -246,12 +269,14 @@ function App() {
         ) : null}
 
         {currentView === 'studio' ? (
-          <StudioView
-            wallet={wallet}
-            evidence={evidence}
-            verification={verification}
-            provenanceRecord={provenanceRecord}
-          />
+          <Suspense fallback={<LazyFallback label="Studio" />}>
+            <StudioView
+              wallet={wallet}
+              evidence={evidence}
+              verification={verification}
+              provenanceRecord={provenanceRecord}
+            />
+          </Suspense>
         ) : null}
 
         {currentView === 'verify' ? (
@@ -260,7 +285,9 @@ function App() {
 
         {currentView === 'batch' ? (
           <section className="workspace app-page verify-page" id="batch">
-            <BatchVerificationWorkspace apiBase={API_BASE} contractId={CONTRACT_ID} wallet={wallet || undefined} />
+            <Suspense fallback={<LazyFallback label="Batch workspace" />}>
+              <BatchVerificationWorkspace apiBase={API_BASE} contractId={CONTRACT_ID} wallet={wallet || undefined} />
+            </Suspense>
           </section>
         ) : null}
       </main>

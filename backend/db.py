@@ -1143,6 +1143,7 @@ def enqueue_job(job_type: str, payload: dict[str, Any]) -> int:
         "_trace_context": job_trace_context(),
         "status": "pending",
         "result": None,
+        "progress": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     return job_id
@@ -1177,13 +1178,61 @@ def lease_job(
     return None
 
 
-def heartbeat_job(job_id: int, progress: float = 0.0, lease_duration: int = 300) -> None:
-    """Record a heartbeat against an in-memory job lease."""
-    del lease_duration
+def heartbeat_job(job_id: int, progress: float | None = None, lease_duration: int = 300) -> None:
+    """Record a heartbeat against an in-memory job lease.
+
+    The heartbeat only extends the lease. Progress is reported separately via
+    :func:`report_job_progress`; ``progress`` is accepted for backwards
+    compatibility and ignored so a heartbeat never overwrites real progress.
+    """
+    del lease_duration, progress
     job = _JOBS.get(job_id)
     if job and job.get("status") == "running":
-        job["progress"] = progress
         job["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+
+
+# Processors may call report_job_progress as often as they like (for example
+# once per decoded frame); updates are stored at most once per this interval.
+JOB_PROGRESS_MIN_INTERVAL_SECONDS = 1.0
+JOB_PROGRESS_PHASE_MAX_LENGTH = 64
+
+
+def report_job_progress(
+    job_id: int,
+    phase: str,
+    percent: float | None = None,
+    *,
+    now: float | None = None,
+) -> bool:
+    """Record ``{"phase", "percent"}`` progress for a running job.
+
+    ``phase`` is a short machine-readable step name (for example
+    ``"embedding"``); ``percent`` is 0-100 or ``None`` when the step has no
+    measurable fraction. Updates are throttled to at most one per
+    ``JOB_PROGRESS_MIN_INTERVAL_SECONDS`` per job, and only running jobs are
+    updated. Returns True when the update was stored.
+    """
+    job = _JOBS.get(job_id)
+    if not job or job.get("status") != "running":
+        return False
+    if not isinstance(phase, str) or not phase.strip():
+        raise ValueError("progress phase must be a non-empty string")
+    phase = phase.strip()[:JOB_PROGRESS_PHASE_MAX_LENGTH]
+    if percent is not None:
+        try:
+            percent = float(percent)
+        except (TypeError, ValueError):
+            raise ValueError("progress percent must be a number or None") from None
+        if percent != percent:  # NaN
+            raise ValueError("progress percent must be a number or None")
+        percent = round(min(100.0, max(0.0, percent)), 1)
+    current = time.monotonic() if now is None else now
+    last = job.get("_progress_at")
+    if last is not None and current - last < JOB_PROGRESS_MIN_INTERVAL_SECONDS:
+        return False
+    job["_progress_at"] = current
+    job["progress"] = {"phase": phase, "percent": percent}
+    return True
 
 
 def complete_job(job_id: int, result: Any = None) -> None:

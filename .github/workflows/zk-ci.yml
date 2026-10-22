@@ -183,10 +183,10 @@ jobs:
         run: |
           if [ -f zk/artifacts.manifest.json ]; then
             echo "Committed manifest found; building and verifying..."
-            zk/noir/scripts/reproducible-build.sh --verify
+            python zk/tools/build_circuits.py build all --verify
           else
             echo "No committed manifest found; building once to generate artifacts..."
-            zk/noir/scripts/reproducible-build.sh --single
+            python zk/tools/build_circuits.py build all --single
           fi
 
       - name: Verify circuit gate and opcode counts against gates.lock.json

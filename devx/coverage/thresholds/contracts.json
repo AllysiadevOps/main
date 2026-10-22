@@ -1,0 +1,9 @@
+{
+  "workspace": "contracts",
+  "report_format": "llvm_cov_json",
+  "description": "Minimum coverage for the contracts workspace, measured by cargo llvm-cov --json.",
+  "thresholds": {
+    "lines": 70,
+    "regions": 65
+  }
+}

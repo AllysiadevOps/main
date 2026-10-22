@@ -293,12 +293,14 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
       {/* Dropzone & Actions Bar */}
       <section className="batch-actions-panel">
         {/* Keyboard: Tab focuses label, Enter/Space opens file picker. Drag-and-drop also supported. */}
+        {/* The input is a sibling, not a descendant: an interactive control nested in role="button" is a WCAG 4.1.2 violation. */}
         <label
           className={`batch-dropzone ${isDragging ? 'dragging' : ''} ${items.length > 0 ? 'compact' : ''}`}
           role="button"
           tabIndex={isRunning ? -1 : 0}
           aria-label="Drop evidence files or standalone JSON receipts. Press Enter or Space to open file picker"
           aria-disabled={isRunning}
+          htmlFor="batch-evidence-input"
           onKeyDown={(e) => {
             if ((e.key === 'Enter' || e.key === ' ') && !isRunning) {
               e.preventDefault()
@@ -321,19 +323,20 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
             <strong>Drop evidence files or standalone JSON receipts</strong>
             <span>Supports MP4, MOV, WEBM, and .json proof manifests</span>
           </div>
-          <input
-            ref={batchInputRef}
-            type="file"
-            multiple
-            accept="video/*,.json,application/json"
-            tabIndex={-1}
-            aria-hidden="true"
-            onChange={(e) => {
-              if (e.target.files) handleFilesAdded(e.target.files)
-            }}
-            disabled={isRunning}
-          />
         </label>
+        <input
+          ref={batchInputRef}
+          id="batch-evidence-input"
+          type="file"
+          multiple
+          accept="video/*,.json,application/json"
+          tabIndex={-1}
+          aria-hidden="true"
+          onChange={(e) => {
+            if (e.target.files) handleFilesAdded(e.target.files)
+          }}
+          disabled={isRunning}
+        />
 
         {items.length > 0 ? (
           <div className="controls-row">
@@ -446,7 +449,7 @@ export default function BatchVerificationWorkspace({ apiBase, contractId, wallet
       {/* Filter and Search Controls */}
       {items.length > 0 ? (
         <section className="table-controls-bar">
-          <div className="filter-tabs" aria-label="Filter results">
+          <div className="filter-tabs" role="group" aria-label="Filter results">
             <button
               className={`tab-btn ${selectedFilter === 'all' ? 'active' : ''}`}
               type="button"

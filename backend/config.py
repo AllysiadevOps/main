@@ -78,6 +78,9 @@ class AppConfig:
     # Owner-scoped credentials: each key may only register its own sourceAddress.
     register_scoped_keys: tuple[ScopedKey, ...] = ()
     job_file_ttl_seconds: int = 86_400
+    retention_blob_gc_enabled: bool = False
+    retention_unreferenced_blobs_enabled: bool = False
+
 
 
 def load_config() -> AppConfig:
@@ -151,6 +154,8 @@ def load_config() -> AppConfig:
         external_fetch_max_response_bytes=_int_env("EXTERNAL_FETCH_MAX_RESPONSE_BYTES", 65_536),
         register_scoped_keys=parse_scoped_keys(_str_env("REGISTER_SCOPED_KEYS")),
         job_file_ttl_seconds=_job_file_ttl_env(),
+        retention_blob_gc_enabled=_blob_gc_enabled_env(),
+        retention_unreferenced_blobs_enabled=_blob_gc_enabled_env(),
     )
 
 
@@ -292,3 +297,18 @@ def _job_file_ttl_env(
     if parsed < 0:
         raise RuntimeError(f"{name} must be non-negative")
     return parsed
+
+
+def _blob_gc_enabled_env() -> bool:
+    """Return whether blob garbage collection is enabled in retention worker."""
+    for var in (
+        "RETENTION_BLOB_GC_ENABLED",
+        "HARPOCRATES_RETENTION_BLOB_GC_ENABLED",
+        "RETENTION_UNREFERENCED_BLOBS_ENABLED",
+        "HARPOCRATES_RETENTION_UNREFERENCED_BLOBS_ENABLED",
+    ):
+        val = os.getenv(var)
+        if val is not None:
+            return val.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+

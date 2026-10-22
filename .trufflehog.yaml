@@ -5,3 +5,4 @@ exclude:
   paths:
     - backend/test_.*\.py$
     - devx/test_.*\.py$
+    - devx/tests/test_.*\.py$

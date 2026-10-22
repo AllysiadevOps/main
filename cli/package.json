@@ -31,14 +31,14 @@
   },
   "dependencies": {
     "@aztec/bb.js": "^0.87.0",
-    "@stellar/stellar-sdk": "^15.1.0"
+    "@stellar/stellar-sdk": "^17.2.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.12.3",
     "eslint": "^10.3.0",
     "typescript": "~6.0.2",
-    "typescript-eslint": "^8.59.2",
+    "typescript-eslint": "^8.71.2",
     "vitest": "^3.2.7"
   }
 }

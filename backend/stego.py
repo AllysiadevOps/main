@@ -11,7 +11,7 @@ import threading
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from tracing import traced
 
@@ -51,7 +51,17 @@ def canonical_metadata_hash_compat(metadata: dict[str, Any]) -> str:
 
 
 @traced("media.embed", attributes={"media.operation": "embed"})
-def embed_metadata(source_path: Path | str, output_path: Path | str, metadata: dict[str, Any]) -> None:
+def embed_metadata(
+    source_path: Path | str,
+    output_path: Path | str,
+    metadata: dict[str, Any],
+    progress_callback: Callable[[int, int | None], None] | None = None,
+) -> None:
+    """Embed ``metadata`` into the video.
+
+    ``progress_callback(frames_done, frames_total)`` is called after each frame is
+    written; ``frames_total`` is ``None`` when ffprobe cannot report a frame count.
+    """
     ffmpeg = _require("ffmpeg")
     info = _probe_video(source_path)
     payload = pack_envelope(metadata)
@@ -68,6 +78,7 @@ def embed_metadata(source_path: Path | str, output_path: Path | str, metadata: d
     timer_out = _kill_after_timeout(process_out, 60.0)
     frame_size = info.width * info.height * 3
     bit_cursor = 0
+    frames_done = 0
 
     try:
         while True:
@@ -81,6 +92,9 @@ def embed_metadata(source_path: Path | str, output_path: Path | str, metadata: d
             bit_cursor = _embed_border_bits(frame, bits, bit_cursor)
             _embed_lsb_bits(frame, bits)
             process_out.stdin.write(frame.tobytes())
+            frames_done += 1
+            if progress_callback is not None:
+                progress_callback(frames_done, info.frame_count)
 
         process_out.stdin.close()
         decode_status = process_in.wait(timeout=30)

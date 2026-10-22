@@ -8,9 +8,23 @@ json`. It never needs a wallet or signing key; a funded public source address
 is needed for read-only Soroban simulation.
 
 ```sh
+node dist/cli.js --version
+# or: node dist/cli.js version
+```
+
+```sh
 node dist/cli.js verify --manifest proof.json \
   --contract-id C... --network 'Test SDF Network ; September 2015' \
   --source-address G... --output json
+```
+
+RPC lookups are bounded by a request timeout (default 15000 ms). Override it
+with `--timeout <ms>`, which must be a positive integer:
+
+```sh
+node dist/cli.js verify --manifest proof.json \
+  --contract-id C... --network 'Test DF Network ; September 2015' \
+  --source-address G... --timeout 5000 --output json
 ```
 
 To check the on-chain lifecycle status of a proof directly by its 32-byte proof ID:
@@ -38,10 +52,10 @@ node dist/cli.js c2pa --manifest proof.json [--receipt receipt.json] --output ex
 
 The export is an **unsigned** C2PA JSON manifest definition carrying standard
 `c2pa.actions.v2` and `c2pa.hash.data` assertions plus namespaced
-`hrpocrates.registry.v1` (canonical manifest fields bound by
-`manifestHash`), `hrpocrates.verification.v1` (the receipt outcome verbatim,
+`hirpocrates.registry.v1` (canonical manifest fields bound by
+`manifestHash`), `hirpocrates.verification.v1` (the receipt outcome verbatim,
 only when `--receipt` is supplied, never a fabricated `valid`), and
-`hrpocrates.export.v1` (`unsigned: true`). It contains only public manifest
+`hirpocrates.export.v1` (`unsigned: true`). It contains only public manifest
 and registry fields; it never carries media bytes, witness values, secrets,
 proof bytes, or signing keys, and the exporter never signs. Out-of-band you
 sign the result with your own C2PA signer. Missing `--manifest` exits 2;
@@ -55,12 +69,23 @@ For reproducible, network-free manifest and status fixtures, run from `cli/`:
 npm test -- --run test/manifest.test.ts test/normalize.test.ts test/status.test.ts
 ```
 
-An offline verification exits 6 with `pending`: it checks syntax and
-deployment binding but **cannot** establish on-chain validity. A successful
-online check exits 0; expired 1, revoked 2, missing 3, network mismatch 4,
-contract mismatch 5, pending 6, failed transaction 7, and malformed input or
-dependency failure 8. Do not treat a nonzero exit or an offline receipt as
-verified evidence. `--tx-hash`, when supplied, must match the manifest.
+### Exit codes
+
+Script authors and CI integrations can rely on the following exit codes to determine the outcome of a command.
+
+| Code | Meaning | Emitted by |
+| :--- | :--- | :--- |
+| `0` | `valid` / `registered` / success | `verify`, `status`, `verify-receipt`, `verify-lineage` |
+| `1` | `expired` | `verify`, `status`, `verify-lineage` |
+| `2` | `revoked` / usage error (missing required flag) | `verify`, `status`, `verify-lineage`, `manifest`, `hash`, `c2pa` |
+| `3` | `not_found` / `missing` / `unknown` | `verify`, `status`, `verify-lineage` |
+| `4` | `network_mismatch` | `verify` |
+| `5` | `contract_mismatch` | `verify` |
+| `6` | `pending` (offline verification) | `verify` |
+| `7` | `failed` transaction | `verify` |
+| `8` | `error` (malformed input, dependency failure, invalid receipt, etc.) | `verify`, `status`, `verify-receipt`, `manifest`, `hash`, `c2pa`, `verify-lineage` |
+
+An offline verification exits `6` with `pending`: it checks syntax and deployment binding but **cannot** establish on-chain validity. Do not treat a nonzero exit or an offline receipt as verified evidence. `--tx-hash`, when supplied, must match the manifest. An RPC request timeout (`--timeout`) is a dependency failure and thus also exits `8`.
 
 Harpocrates CLI environment variables:
 
@@ -83,5 +108,5 @@ remains readable, without silently upgrading its version. Existing v1 receipt
 shape and exit-code mapping remain unchanged. For rollback, deploy the prior
 CLI build; no chain, metadata, or registry migration is required. The trust
 boundary is the selected Stellar RPC and local clock (used to detect elapsed
-record expiry); use a trusted RPC and synchronized host clock. The CLI does
-not verify Noir proof bytes or replace the browser verifier.
+record expiry); use a trusted RPC and synchronized host clock. The CLI
+does not verify Noir proof bytes or replace the browser verifier.

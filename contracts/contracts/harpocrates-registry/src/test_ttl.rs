@@ -209,3 +209,133 @@ fn test_lineage_and_timestamp_claim_ttl_extension_and_ledger_advancement() {
     assert_eq!(final_claim.proof_id, parent_proof_id);
     assert_eq!(final_claim.attestation_digest, attestation_digest);
 }
+
+#[test]
+fn test_dispute_ttl_extension_and_ledger_advancement() {
+    use soroban_sdk::testutils::{Address as _, Ledger};
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Start at an initial timestamp and ledger sequence
+    let start_ts: u64 = 1_700_000_000;
+    env.ledger().set_timestamp(start_ts);
+    env.ledger().set_sequence_number(100);
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let actor = Address::generate(&env);
+    let reporter = Address::generate(&env);
+
+    client.init(&admin);
+
+    // Register a source proof
+    let proof_id = BytesN::from_array(&env, &[0x41; 32]);
+    let video_hash = BytesN::from_array(&env, &[0x42; 32]);
+    let metadata_hash = BytesN::from_array(&env, &[0x43; 32]);
+    client.register_source(&actor, &video_hash, &metadata_hash, &proof_id);
+
+    // Open a dispute
+    let dispute_id = BytesN::from_array(&env, &[0x51; 32]);
+    let rep_hash = BytesN::from_array(&env, &[0x52; 32]);
+    let commitment = BytesN::from_array(&env, &[0x53; 32]);
+
+    let dispute_rec = client.open_dispute(
+        &reporter,
+        &rep_hash,
+        &dispute_id,
+        &proof_id,
+        &DisputeReason::ContentError,
+        &commitment,
+    );
+    assert_eq!(dispute_rec.status, DisputeStatus::Open);
+    assert_eq!(dispute_rec.dispute_id, dispute_id);
+    assert_eq!(dispute_rec.proof_id, proof_id);
+
+    // Verify initial readability
+    let initial_dispute = client.get_dispute(&dispute_id);
+    assert!(initial_dispute.is_some());
+    assert_eq!(initial_dispute.unwrap().dispute_id, dispute_id);
+    assert_eq!(client.get_open_dispute_count(&proof_id), 1);
+    assert_eq!(client.get_reporter_open_dispute_count(&reporter), 1);
+
+    // Assert that ReporterCooldown uses temporary storage and does NOT consume persistent rent
+    assert!(
+        env.storage().temporary().has(&DataKey::ReporterCooldown(rep_hash.clone())),
+        "ReporterCooldown must be stored in temporary storage"
+    );
+    assert!(
+        !env.storage().persistent().has(&DataKey::ReporterCooldown(rep_hash.clone())),
+        "ReporterCooldown must not consume persistent storage rent"
+    );
+
+    // Maintain/extend TTL on persistent keys including proof and dispute entries
+    let keys = vec![
+        &env,
+        DataKey::Proof(proof_id.clone()),
+        DataKey::Dispute(dispute_id.clone()),
+        DataKey::ProofOpenDisputeCount(proof_id.clone()),
+    ];
+    client.extend_persistent_ttls(&keys);
+
+    // Advance the ledger sequence and timestamp through multiple steps
+    // (500_000 ledgers / ~30 days) with reads in between
+    for step in 1..=5 {
+        let advanced_ts = start_ts + (step as u64) * 100_000;
+        let advanced_seq = 100 + step * 100_000;
+        env.ledger().set_timestamp(advanced_ts);
+        env.ledger().set_sequence_number(advanced_seq);
+
+        // Assert dispute and open count remain readable during ledger progression
+        let disp = client.get_dispute(&dispute_id);
+        assert!(disp.is_some(), "Dispute must remain readable at step {}", step);
+        assert_eq!(disp.unwrap().dispute_id, dispute_id);
+
+        let count = client.get_open_dispute_count(&proof_id);
+        assert_eq!(count, 1, "Dispute count must remain 1 at step {}", step);
+    }
+
+    // Verify proof and dispute records survived as long as their proof
+    let final_proof = client.get_proof(&proof_id);
+    assert!(final_proof.is_some(), "Proof must survive ledger advancement");
+
+    let final_dispute = client.get_dispute(&dispute_id);
+    assert!(final_dispute.is_some(), "Dispute must survive as long as its proof");
+    assert_eq!(client.get_open_dispute_count(&proof_id), 1);
+
+    // After advancing well past the 24h cooldown window (500_000s > 86_400s),
+    // temporary cooldown entry has expired, allowing a second dispute from the same reporter
+    let dispute_id_2 = BytesN::from_array(&env, &[0x61; 32]);
+    let commitment_2 = BytesN::from_array(&env, &[0x62; 32]);
+    let dispute_rec_2 = client.open_dispute(
+        &reporter,
+        &rep_hash,
+        &dispute_id_2,
+        &proof_id,
+        &DisputeReason::MetadataError,
+        &commitment_2,
+    );
+    assert_eq!(dispute_rec_2.status, DisputeStatus::Open);
+    assert_eq!(client.get_open_dispute_count(&proof_id), 2);
+
+    // Respond to dispute_id_2 to test respond_dispute write path
+    let response_commitment = BytesN::from_array(&env, &[0x64; 32]);
+    let responded = client.respond_dispute(&actor, &dispute_id_2, &response_commitment);
+    assert_eq!(responded.status, DisputeStatus::Responded);
+
+    // Advance ledgers again and assert both disputes and proof remain alive
+    let advanced_ts_2 = start_ts + 700_000;
+    let advanced_seq_2 = 100 + 700_000;
+    env.ledger().set_timestamp(advanced_ts_2);
+    env.ledger().set_sequence_number(advanced_seq_2);
+
+    let disp_1 = client.get_dispute(&dispute_id).expect("dispute 1 exists");
+    assert_eq!(disp_1.status, DisputeStatus::Open);
+
+    let disp_2 = client.get_dispute(&dispute_id_2).expect("dispute 2 exists");
+    assert_eq!(disp_2.status, DisputeStatus::Responded);
+
+    assert_eq!(client.get_open_dispute_count(&proof_id), 2);
+    assert!(client.get_proof(&proof_id).is_some());
+}

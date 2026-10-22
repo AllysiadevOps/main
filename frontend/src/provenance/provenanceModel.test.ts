@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChainProofRecord, IdentityTier } from '../stellarTypes'
-import { buildProvenanceRecord, NOIR_CIRCUIT_VERSION } from './provenanceModel'
+import { buildProvenanceRecord, disputeNotice, NOIR_CIRCUIT_VERSION } from './provenanceModel'
 
 const BASE_MANIFEST = {
   protocol: 'harpocrates' as const,
@@ -127,5 +127,50 @@ describe('buildProvenanceRecord', () => {
     })
 
     expect(record.staleness).toEqual({ stale: false })
+  })
+})
+
+describe('provenance disputes', () => {
+  function withDisputes(openDisputeCount: number | null | undefined) {
+    return buildProvenanceRecord({
+      manifest: BASE_MANIFEST,
+      chainProof: MATCHING_CHAIN_PROOF,
+      rpcUrl: 'https://rpc.example.test',
+      transactionHash: 'f'.repeat(64),
+      method: 'register_source',
+      openDisputeCount,
+      fetchedAt: FETCHED_AT,
+    })
+  }
+
+  it('keeps the count unknown when it was not looked up', () => {
+    expect(buildRecord(MATCHING_CHAIN_PROOF).disputes).toEqual({ openCount: null })
+    expect(withDisputes(undefined).disputes).toEqual({ openCount: null })
+    expect(withDisputes(null).disputes).toEqual({ openCount: null })
+  })
+
+  it('carries a zero and a positive count through unchanged', () => {
+    expect(withDisputes(0).disputes).toEqual({ openCount: 0 })
+    expect(withDisputes(3).disputes).toEqual({ openCount: 3 })
+  })
+
+  it('treats negative, fractional or non-finite counts as unknown', () => {
+    for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(withDisputes(bad).disputes).toEqual({ openCount: null })
+    }
+  })
+
+  it('includes the disputes field in the exported provenance JSON', () => {
+    const parsed = JSON.parse(JSON.stringify(withDisputes(2)))
+    expect(parsed.disputes).toEqual({ openCount: 2 })
+  })
+
+  it('produces a notice only when the count is greater than zero', () => {
+    expect(disputeNotice(withDisputes(null))).toBeNull()
+    expect(disputeNotice(withDisputes(0))).toBeNull()
+    expect(disputeNotice(withDisputes(1))).toBe(
+      'This proof has 1 open dispute recorded on chain. A dispute does not by itself invalidate the proof.',
+    )
+    expect(disputeNotice(withDisputes(4))).toContain('4 open disputes')
   })
 })

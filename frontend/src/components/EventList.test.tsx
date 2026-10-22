@@ -1,7 +1,8 @@
-import { render, screen, fireEvent } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
-import type { ProofEvent } from '../types'
-import { EventList } from './EventList'
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import type { ProofEvent } from '../types';
+import EventList, { Event } from './EventList';
 
 const makeEvent = (overrides: Partial<ProofEvent> = {}): ProofEvent => ({
   id: 1,
@@ -17,6 +18,41 @@ const makeEvent = (overrides: Partial<ProofEvent> = {}): ProofEvent => ({
 })
 
 describe('EventList', () => {
+  it('renders the ISO string for a valid claimed time', () => {
+    const events: Event[] = [
+      {
+        id: 'valid',
+        title: 'Valid event',
+        time_attestation: {
+          claimedTime: { unixMs: 1700000000000 },
+          observedTime: { unixMs: 1700000000000 },
+        },
+      },
+    ];
+
+    render(<EventList events={events} />);
+
+    const expected = new Date(1700000000000).toISOString();
+    expect(screen.getAllByText(expected).length).toBe(2);
+  });
+
+  it('renders a placeholder for a non-finite claimed time', () => {
+    const events: Event[] = [
+      {
+        id: 'invalid',
+        title: 'Invalid event',
+        time_attestation: {
+          claimedTime: { unixMs: NaN },
+          observedTime: null,
+        },
+      },
+    ];
+
+    render(<EventList events={events} />);
+
+    expect(screen.getByText('invalid time')).toBeTruthy();
+  });
+
   it('renders a user-facing refresh button label without internal infrastructure names', () => {
     render(<EventList events={[]} onRefresh={() => {}} />)
     const button = screen.getByRole('button', { name: 'Refresh recent proofs' })

@@ -31,7 +31,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Validate PowerShell migration examples without network or deployment
         shell: pwsh
         run: ./scripts/test_migration_guide_examples.ps1

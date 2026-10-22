@@ -58,8 +58,6 @@ export function StudioView({ wallet, evidence, verification, provenanceRecord }:
 
   const studioInputRef = useRef<HTMLInputElement | null>(null)
 
-  const studioInputRef = useRef<HTMLInputElement | null>(null)
-
   const shareLinkInput = useMemo((): VerificationShareLinkInput | null => {
     if (!proof?.videoHash || !proof.proofId || !proof.metadataHash || !CONTRACT_ID) return null
     return {

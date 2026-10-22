@@ -1,0 +1,100 @@
+# TESTING ONLY: all values, including private inputs, are published synthetic data.
+# Never use these values as real credential material.
+#
+# Purpose: describe one redacted derivative's relationship to a hidden parent.
+# The parent is the original evidence; the derivative is its redacted version.
+# The circuit checks numeric commitments to this relationship, not media bytes
+# or the correctness of an actual image/video redaction.
+# Private inputs are known to the prover but omitted from the public statement.
+# Public inputs identify the statement that a verifier checks against a proof.
+#
+# Example construction: the seven private values come from the witness in
+# ../fixtures/redacted_ancestry_vectors.json. Operation and depth come from
+# ra-pos-001-valid-min-depth. The remaining public values were calculated by
+# redacted_ancestry_helper. H means std::hash::pedersen_hash; DOMAIN_* constants
+# distinguish hash purposes, as defined in src/main.nr.
+
+# Private witness inputs
+
+# Private: parent_hash_hi and parent_hash_lo are the two halves of the original
+# evidence's hash. Keeping both private conceals the parent identifier while
+# allowing the prover to demonstrate knowledge of the committed parent.
+# Example: synthetic halves supplied by the fixture, not hashes of real media.
+parent_hash_hi = "11111"
+parent_hash_lo = "22222"
+
+# Private: blinding value that hides the parent hash behind parent_commitment.
+# It lets the public commitment refer to the parent without exposing its hash.
+# The circuit requires a nonzero value.
+parent_blinding = "33333"
+
+# Private: commitment representing which parts of the parent are concealed.
+# It ties the statement to a redaction mask without disclosing that mask.
+# Example: a synthetic commitment supplied by the fixture; this circuit does
+# not receive a mask or check how this commitment was created from one.
+mask_commitment = "44444"
+
+# Private: extra blinding/seed for the redaction parameters, so their public
+# digest depends on hidden information as well as the mask commitment.
+# Example: fixed nonzero fixture data; the circuit does not generate randomness.
+redaction_seed = "55555"
+
+# Private: the prover's credential-related secret, connecting the nullifier to
+# the same secret holder. This circuit does not authenticate credential issuance.
+# The circuit requires a nonzero value.
+credential_secret = "12345"
+
+# Private: additional secret for deriving the public replay-tracking identifier
+# without publishing the credential secret. The two secrets need not differ.
+# The circuit requires a nonzero value.
+nullifier_secret = "67890"
+
+# Public statement inputs
+
+# Public: reference to the hidden parent that the prover claims this derivative
+# descends from. The circuit checks knowledge of a matching private opening.
+# Derived from H([DOMAIN_PARENT_COMMIT, parent_hash_hi, parent_hash_lo, parent_blinding]).
+parent_commitment = "0x0ba525932854b5452d78deea15b3cf24576aae19531419f725a029bd954618aa"
+
+# Public: identifier for the derivative in this circuit's statement, linking
+# the same hidden parent to the same redaction parameters. It is not a checked
+# hash of an actual redacted media file.
+# Derived from H([DOMAIN_DERIVATIVE, parent_hash_hi, parent_hash_lo,
+#                 parameters_digest, redaction_seed]).
+derivative_digest = "0x195fcb9607ac65b82ca64c952448321d6c2a8d1e2941f205a7bbdd935ac188fe"
+
+# Public: reference to the hidden redaction parameters, so their consistency
+# can be checked without publishing the mask commitment or seed.
+# Derived from H([DOMAIN_REDACT_PARAMS, mask_commitment, redaction_seed]).
+parameters_digest = "0x1306ddb1d4f1e454474db5009b3e8f7294636b92c59171057551e57cb07f6e16"
+
+# Public: labels the claimed transformation as redaction, rather than another
+# lineage operation. This circuit accepts only OPERATION_REDACT.
+# Example encoding: ASCII "redact" interpreted as a field value.
+operation_type = "0x726564616374"
+
+# Public: identifier for the complete claimed relationship: which parent,
+# derivative and parameters belong together, at which depth and circuit version.
+# This is a statement commitment, not a root reconstructed from an ancestry path.
+# Derived from H([DOMAIN_ANCESTRY, parent_commitment, derivative_digest,
+#                 parameters_digest, OPERATION_REDACT, depth, CIRCUIT_VERSION]).
+# CIRCUIT_VERSION is 1.
+ancestry_root = "0x1627772c1aab4cf343673524cda17c6630773be5e7f351b592dd6fe84fe131ba"
+
+# Public: repeatable identifier for the same secrets and ancestry statement,
+# allowing an application to detect reuse without learning the secrets.
+# The circuit checks its derivation; it does not store or reject used identifiers.
+# Derived from H([DOMAIN_NULLIFIER, credential_secret, nullifier_secret, ancestry_root]).
+nullifier = "0x29cbb2cf20b9b51284a3d40d8bd81d269aa12cd73ef2b152a094184031da81c1"
+
+# Public: claimed position of the derivative in a chain of transformations.
+# It distinguishes statements at different depths. The circuit accepts 1..4
+# and binds the claim into ancestry_root, but does not count or traverse ancestors.
+# Example: the fixture's minimum-depth positive case.
+depth = "1"
+
+# Public: protocol/version/network context expected for this statement, so the
+# circuit can reject a supplied tag for a different configured context.
+# Derived from H([DOMAIN_PROTOCOL_FIELD, DOMAIN_VERSION_FIELD, DOMAIN_NETWORK_FIELD]);
+# these are fixed circuit constants, not values discovered from a live network.
+domain_tag = "0x1a73cc6eda5fc8454c3bf62ef9defb0e6e1f7d999ab6857a39692821856ad61d"

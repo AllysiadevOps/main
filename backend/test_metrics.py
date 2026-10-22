@@ -207,6 +207,12 @@ class TestMetricsCollectorJobQueue(unittest.TestCase):
         self.assertIsInstance(rendered, str)
         self.assertNotIn("harpocrates_jobs", rendered)
 
+    def test_record_deleted_blob_metric(self) -> None:
+        self.collector.record_deleted_blob(3)
+        rendered = self.collector.generate_prometheus_metrics()
+        self.assertIn("harpocrates_retention_deleted_blobs_total 3", rendered)
+
+
 
 class TestMetricsFlaskEndpoint(unittest.TestCase):
     """Test the /metrics HTTP endpoint integration with job queue gauges."""

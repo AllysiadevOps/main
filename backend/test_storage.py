@@ -17,8 +17,8 @@ def test_get_storage_dir_creates_private_directory(monkeypatch, tmp_path):
 
     assert result == target
     assert target.is_dir()
-    mode = stat.SMODE(target.stat().st_mode)
-    assert mode == 00700, f"unexpected mode: {oct(mode)}"
+    mode = stat.S_IMODE(target.stat().st_mode)
+    assert mode == 0o700, f"unexpected mode: {oct(mode)}"
 
 
 def test_get_storage_dir_tightens_existing_directory(monkeypatch, tmp_path):
@@ -29,10 +29,10 @@ def test_get_storage_dir_tightens_existing_directory(monkeypatch, tmp_path):
 
     target = tmp_path / "jobs"
     target.mkdir()
-    os.chmod(target, 00755)
+    os.chmod(target, 0o755)
     monkeypatch.setenv("HARPOCRATES_STORAGE_DIR", str(target))
 
     storage.get_storage_dir()
 
-    mode = stat.SMODE(target.stat().st_mode)
-    assert mode == 00700, f"unexpected mode: {oct(mode)}"
+    mode = stat.S_IMODE(target.stat().st_mode)
+    assert mode == 0o700, f"unexpected mode: {oct(mode)}"

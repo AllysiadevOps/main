@@ -1,8 +1,10 @@
 import React from 'react'
-import { render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
+import BatchVerificationWorkspace from './components/BatchVerificationWorkspace'
+import type { BatchItemResult, BatchOutcome, BatchProgress, BatchSummary } from './batchVerifier'
 import {
   MANUAL_ONLY_RULES,
   expectNoA11yViolations,
@@ -12,6 +14,142 @@ import {
 vi.mock('./components/EvilEye', () => ({
   default: () => <div data-testid="evil-eye" />,
 }))
+
+// The workspace only reaches its in-progress and completed states through
+// BatchVerifier progress callbacks, so the suite doubles that module and
+// scripts the callbacks instead of hashing media or calling the registry API.
+const batchDouble = vi.hoisted(() => ({
+  mode: 'idle' as 'idle' | 'in-progress' | 'completed',
+  releaseBatch: null as null | (() => void),
+}))
+
+vi.mock('./batchVerifier', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./batchVerifier')>()
+
+  const progressOf = (overrides: Partial<BatchProgress>): BatchProgress => ({
+    totalFiles: 1,
+    completedFiles: 0,
+    processedBytes: 0,
+    totalBytes: 0,
+    activeCount: 0,
+    isCancelled: false,
+    isDone: false,
+    ...overrides,
+  })
+
+  const itemOf = (file: File, index: number, status: BatchOutcome): BatchItemResult => ({
+    id: `axe-item-${index}`,
+    file,
+    fileName: file.name,
+    fileSizeBytes: file.size,
+    status,
+    videoHash: status === 'error' ? null : '0123456789abcdef0123456789abcdef',
+    metadataHash: null,
+    sourceHash: null,
+    tier: null,
+    chainStatus: null,
+    message: `Scripted ${status} outcome.`,
+    events: [],
+    chainProof: null,
+    duplicateOf: status === 'duplicate' ? 'first-clip.mp4' : null,
+    manifest: null,
+    durationMs: 12,
+    failureReason: status === 'error' ? 'Scripted verification failure.' : null,
+  })
+
+  const summaryOf = (items: BatchItemResult[], totalBytes: number): BatchSummary => ({
+    totalFiles: items.length,
+    confirmed: items.filter((i) => i.status === 'confirmed').length,
+    revoked: items.filter((i) => i.status === 'revoked').length,
+    unconfirmed: items.filter((i) => i.status === 'metadata-only').length,
+    manifests: items.filter((i) => i.status === 'manifest-valid').length,
+    duplicates: items.filter((i) => i.status === 'duplicate').length,
+    errors: items.filter((i) => i.status === 'error').length,
+    cancelled: 0,
+    totalBytes,
+    durationMs: 120,
+  })
+
+  class DoubledBatchVerifier {
+    updateConfig(): void {}
+
+    cancel(): void {}
+
+    async runBatch(
+      files: File[],
+      onProgress?: (progress: BatchProgress, items: BatchItemResult[]) => void,
+    ): Promise<{ items: BatchItemResult[]; summary: BatchSummary }> {
+      const totalBytes = files.reduce((acc, file) => acc + file.size, 0)
+
+      if (batchDouble.mode === 'in-progress') {
+        onProgress?.(
+          progressOf({
+            totalFiles: files.length,
+            completedFiles: 1,
+            processedBytes: files[0].size,
+            totalBytes,
+            activeCount: files.length - 1,
+          }),
+          files.map((file, index) => itemOf(file, index, index === 0 ? 'confirmed' : 'processing')),
+        )
+        await new Promise<void>((resolve) => {
+          batchDouble.releaseBatch = resolve
+        })
+      }
+
+      const statuses: BatchOutcome[] = [
+        'confirmed',
+        'revoked',
+        'metadata-only',
+        'duplicate',
+        'error',
+        'manifest-valid',
+      ]
+      const items = files.map((file, index) =>
+        itemOf(file, index, statuses[index % statuses.length]),
+      )
+      onProgress?.(
+        progressOf({
+          totalFiles: files.length,
+          completedFiles: files.length,
+          processedBytes: totalBytes,
+          totalBytes,
+          isDone: true,
+        }),
+        items,
+      )
+      return { items, summary: summaryOf(items, totalBytes) }
+    }
+  }
+
+  return { ...actual, BatchVerifier: DoubledBatchVerifier }
+})
+
+const kibibytes = (size: number) => new Uint8Array(size * 1024)
+
+async function renderBatchWorkspace(mode: 'idle' | 'in-progress' | 'completed', files: File[]) {
+  batchDouble.mode = mode
+  batchDouble.releaseBatch = null
+  const utils = render(
+    <BatchVerificationWorkspace apiBase="http://127.0.0.1:5050" contractId="CTESTID" wallet="GTEST" />,
+  )
+
+  if (mode === 'idle') return utils
+
+  fireEvent.change(utils.container.querySelector('input[type="file"]') as HTMLInputElement, {
+    target: { files },
+  })
+  const verifyButton = await waitFor(() =>
+    screen.getByRole('button', { name: new RegExp(`Verify Batch \\(${files.length}\\)`, 'i') }),
+  )
+  fireEvent.click(verifyButton)
+
+  const progressLabel =
+    mode === 'in-progress' ? `Processing (1/${files.length})` : 'Batch Finished'
+  await waitFor(() => expect(screen.getByText(progressLabel)).toBeInTheDocument())
+
+  return utils
+}
 
 const brokenPage = () => {
   const root = document.createElement('div')
@@ -34,6 +172,8 @@ async function violationsFor(root: HTMLElement) {
 describe('a11y.axe — WCAG 2.2 AA automated checks', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    batchDouble.mode = 'idle'
+    batchDouble.releaseBatch = null
     Object.defineProperty(window, 'scrollTo', {
       configurable: true,
       value: vi.fn(),
@@ -84,6 +224,41 @@ describe('a11y.axe — WCAG 2.2 AA automated checks', () => {
     await user.click(screen.getByRole('button', { name: /batch workspace/i }))
 
     expectNoA11yViolations(await runAxe(container), 'batch workspace view')
+  })
+
+  it('batch workspace (idle) has no WCAG AA violations', async () => {
+    const { container } = await renderBatchWorkspace('idle', [])
+
+    expectNoA11yViolations(await runAxe(container), 'batch workspace (idle)')
+  })
+
+  it('batch workspace (in progress) has no WCAG AA violations', async () => {
+    const { container } = await renderBatchWorkspace('in-progress', [
+      new File([kibibytes(2)], 'first-clip.mp4', { type: 'video/mp4' }),
+      new File([kibibytes(3)], 'second-clip.mp4', { type: 'video/mp4' }),
+      new File([kibibytes(4)], 'third-clip.mp4', { type: 'video/mp4' }),
+    ])
+
+    expectNoA11yViolations(await runAxe(container), 'batch workspace (in progress)')
+
+    // Let the scripted batch finish so no state update lands after cleanup.
+    await act(async () => {
+      batchDouble.releaseBatch?.()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+  })
+
+  it('batch workspace (completed) has no WCAG AA violations', async () => {
+    const { container } = await renderBatchWorkspace('completed', [
+      new File([kibibytes(2)], 'first-clip.mp4', { type: 'video/mp4' }),
+      new File([kibibytes(3)], 'second-clip.mov', { type: 'video/quicktime' }),
+      new File([kibibytes(4)], 'third-clip.webm', { type: 'video/webm' }),
+      new File([kibibytes(1)], 'fourth-clip.mp4', { type: 'video/mp4' }),
+      new File([kibibytes(1)], 'broken-clip.mp4', { type: 'video/mp4' }),
+      new File([kibibytes(1)], 'manifest.json', { type: 'application/json' }),
+    ])
+
+    expectNoA11yViolations(await runAxe(container), 'batch workspace (completed)')
   })
 
   // ── Negative: the harness must still flag real defects ─────────────────────

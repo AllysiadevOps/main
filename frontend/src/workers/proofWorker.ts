@@ -2,8 +2,10 @@
 import { generateSilentWitnessProof } from '../noirClient'
 import { CircuitInputError } from '../circuitInputSchema'
 import type { WorkerRequest, WorkerResponse, TransferableProofInput } from './proofWorker.types'
+import { resolveThreadCount } from './threadCount'
 
 let activeRequestId: string | null = null
+let cancelRequestedFor: string | null = null
 
 function post(msg: WorkerResponse) {
   ;(self as unknown as Worker).postMessage(msg)
@@ -49,7 +51,7 @@ async function handleGenerate(requestId: string, input: TransferableProofInput) 
       inputSchemaVersion: input.inputSchemaVersion,
       verifierScope: input.verifierScope,
       epoch: input.epoch,
-    })
+    }, { threadCount: resolveThreadCount() })
     post({ type: 'RESULT', requestId, proof })
   } catch (err) {
     if (cancelRequestedFor === requestId) {

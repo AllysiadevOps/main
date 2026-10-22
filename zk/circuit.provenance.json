@@ -128,7 +128,7 @@
     "zk/noir/redacted_ancestry_helper/Nargo.toml": "6b31312d19cd06066fb6fa84d1bc58a498fda64cb5cf767c71222ff25f55e9fd",
     "zk/noir/redacted_ancestry_helper/src/main.nr": "d2b4267906b49006f339b15801d1567a4eda665f7bb2a9a67c7cb8f18132254d",
     "zk/noir/revocation_witness/Nargo.toml": "fe6560bf479d954446887e396641b7b5fe38269548448c9b6ffba7e0daa9362d",
-    "zk/noir/revocation_witness/src/main.nr": "0f9842897865eeb4f3a8d33bd7e4b03d6a072adb675c156c6f95332cbb7bd39d",
+    "zk/noir/revocation_witness/src/main.nr": "d32447312441d8a7d32c8352c4a97002fc669338d0098084e3b13df5f18848b3",
     "zk/noir/revocation_witness_helper/Nargo.toml": "cbcf80c3b6df5039b3a94c153f55b841d5af13c9720f230da2cc5b7772689450",
     "zk/noir/revocation_witness_helper/src/main.nr": "3292a22b6c09ce0d797274a6c1187e4f85598607eed1bd77248b097347d8bff2",
     "zk/noir/selective_disclosure/Nargo.toml": "2d35906d5b7e88b49e5f91e49172902c11751721553276d19aa19079649ddd7b",
